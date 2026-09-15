@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# 머지 게이트 (충돌을 해결하고 손으로 커밋하는 경로 — git 은 이때 pre-merge-commit 을
+# 띄우지 않는다). MERGE_HEAD 가 없는 일반 커밋은 즉시 통과한다.
+exec "$(dirname "$0")/dev-sync.sh" gate-commit

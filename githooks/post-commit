@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# dev 에서 부모 2개인 커밋(충돌 해결 머지)이면 보고서 + 큐. 그 외 커밋은 즉시 통과.
+# 본체는 dev-sync.sh.
+exec "$(dirname "$0")/dev-sync.sh" report-commit

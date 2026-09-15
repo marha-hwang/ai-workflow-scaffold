@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+# 머지 게이트 (충돌 없는 머지 경로). 본체는 dev-sync.sh — 이 파일은 shim 이다.
+exec "$(dirname "$0")/dev-sync.sh" gate
