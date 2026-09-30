@@ -39,8 +39,9 @@ CLAUDE_BIN=@@CLAUDE_BIN@@ # 절대경로 필수 (훅은 로그인 셸 아님). i
 #       한 줄 형식: - [브랜치](링크) 시각 — <spec.html 의 h1>
 #       제목이 없으면 첫 커밋 제목으로 대신한다 (브랜치명만으로는 무슨 작업인지 안 보인다)
 #   <TICKET_DIR>/<slug>/verify-<sha>.log  = 기계 검증 (통과/실패 둘 다, sha별 누적)
-#   <TICKET_DIR>/<slug>/review-<sha>.md   = 라운드 리뷰 (머지 성공 시만). close 때 rounds/ 로 이동
-#   <TICKET_DIR>/<slug>/review.md         = 티켓 종합 (close 때 1회. 라운드 리뷰들을 접은 최종본)
+#   <TICKET_DIR>/<slug>/review-<sha>.html = 라운드 리뷰 (머지 성공 시만). close 때 rounds/ 로 이동
+#   <TICKET_DIR>/<slug>/review.html       = 티켓 종합 (close 때 1회. 라운드 리뷰들을 접은 최종본)
+#       보고서도 스펙과 같은 HTML 한 장이다 — 사람이 브라우저에서 열어 체크하며 읽는다
 #   <TICKET_DIR>/.verify-line             = gate -> report 로 넘기는 기계층 한 줄
 TICKET_DIR=.tickets
 # ---------------------------------------------------------------------------
@@ -88,6 +89,41 @@ notify() { # $1 대상경로  $2 메시지
   orca worktree set --worktree "path:$1" --comment "⚠ $2" --json >/dev/null 2>&1 || true
 }
 
+# 보고서 머리. 라운드 리뷰·티켓 종합 둘 다 이걸로 연다 — 보고서는 브라우저에서 바로
+# 열리는 HTML 한 장이다. 뒤에 기계층 블록과 LLM 출력이 조각으로 이어붙는다
+# (닫는 태그는 없어도 된다 — 이어붙이기로 끝나는 파일이라 열어두는 편이 안전하다).
+# 색은 --bg/--fg 로 못박는다. color-scheme 만 걸면 그 규칙을 안 따르는 뷰어에서
+# 글자가 배경색에 묻혀 안 보인다.
+report_head() { # $1 제목 한 줄  $2 부제(시각)
+  cat <<HTML
+<!doctype html>
+<meta charset="utf-8">
+<title>$1</title>
+<style>
+  :root { color-scheme: light dark; --bg: #fff; --fg: #1a1a1a; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #16181d; --fg: #e8e8e8; } }
+  body { background: var(--bg); color: var(--fg);
+         max-width: 46rem; margin: 3rem auto; padding: 0 1.5rem;
+         font: 16px/1.75 -apple-system, system-ui, sans-serif; }
+  h1 { font-size: 1.5rem; margin: 0 0 .3rem; }
+  .when { opacity: .55; font-size: .85em; margin: 0 0 2rem; }
+  section { border-top: 1px solid rgba(128,128,128,.3); margin-top: 2rem; padding-top: 1rem; }
+  h2 { font-size: .9rem; letter-spacing: .04em; opacity: .6; margin: 0 0 .75rem; }
+  h3 { font-size: .85rem; opacity: .8; margin: 1.2rem 0 .4rem; }
+  ul { margin: 0; padding-left: 1.2rem; }
+  li { margin-bottom: .4rem; }
+  code { font-size: .9em; background: rgba(128,128,128,.18);
+         padding: .1em .35em; border-radius: 3px; }
+  .machine { border-left: 3px solid #3b82f6; padding-left: 1rem; border-top: none; }
+  .check { list-style: none; padding-left: 0; }
+  .check input { margin-right: .4rem; }
+</style>
+
+<h1>$1</h1>
+<p class="when">$2</p>
+HTML
+}
+
 # 머지 게이트. 워크트리 $1 에서 verify.sh 를 돌리고 종료코드로 판정한다.
 # 통과 0 / 실패 1.  verify.sh 가 없으면 통과로 친다 (없는 프로젝트도 있다 —
 # 전부 갖춘 뒤 켜려 하면 시작을 못 한다).
@@ -123,7 +159,7 @@ review_range() { # $1 dev워크트리  $2 before  $3 after  $4 라벨(브랜치)
   # 산출물은 티켓 폴더 안, 인덱스(queue.md)는 루트 하나. 큐가 dev 전체를 대표해야 한다.
   slug=$(slug_of "$src")
   mkdir -p "$rdir/$slug"
-  fname="$slug/review-$(git -C "$devwt" rev-parse --short "$after").md"
+  fname="$slug/review-$(git -C "$devwt" rev-parse --short "$after").html"
   # 큐 식별용 한 줄. spec.html 이 없는 경로(_dev 등)는 첫 커밋 제목으로 대신한다.
   desc=$(spec_title "$rdir/$slug")
   [ -n "$desc" ] || desc=$(git -C "$devwt" log "$before".."$after" --no-merges --pretty=%s | head -1)
@@ -131,8 +167,8 @@ review_range() { # $1 dev워크트리  $2 before  $3 after  $4 라벨(브랜치)
   # 기계층 블록은 훅이 쓴다. LLM 이 못 건드려야 사실로 읽힌다.
   # (판단층과 섞이면 의견이 사실의 신뢰도를 빌려간다)
   {
-    printf '# %s → %s  %s\n\n' "$src" "$DEV_BRANCH" "$(date '+%Y-%m-%d %H:%M')"
-    printf '## 기계 검증\n\n%s\n\n' "$VERIFY_LINE"
+    report_head "$src → $DEV_BRANCH" "$(date '+%Y-%m-%d %H:%M')"
+    printf '<section class="machine">\n<h2>기계 검증</h2>\n<p>%s</p>\n</section>\n\n' "$VERIFY_LINE"
   } > "$rdir/$fname"
 
   # --allowedTools 는 가변인자라 뒤에 오는 positional(프롬프트)까지 삼킨다.
@@ -156,7 +192,7 @@ review_range() { # $1 dev워크트리  $2 before  $3 after  $4 라벨(브랜치)
   return 0
 }
 
-# 티켓 종합. 라운드 리뷰 N개(review-<sha>.md)를 review.md 하나로 접는다.
+# 티켓 종합. 라운드 리뷰 N개(review-<sha>.html)를 review.html 하나로 접는다.
 # close 시점에만 돈다 — 그때가 티켓의 최종 상태이고, dev 워크트리가 최종 코드다.
 # 라운드 원본은 rounds/ 로 옮겨 남긴다(기록은 지우지 않는다). 큐 줄도 티켓 1줄로 접는다.
 do_consolidate() { # $1 브랜치
@@ -167,9 +203,9 @@ do_consolidate() { # $1 브랜치
   # 생성 순 = 라운드 순 (sha 는 순서를 안 알려준다).
   # fresh = 아직 안 접은 라운드(폴더 직속) / prev = 지난 close 가 접어둔 이력(rounds/).
   # 재개된 티켓을 두 번째로 close 할 때 prev 를 입력에 넣지 않으면 종합이 앞 라운드를 잃는다.
-  fresh=$(ls -tr "$tdir"/review-*.md 2>/dev/null || true)
+  fresh=$(ls -tr "$tdir"/review-*.html 2>/dev/null || true)
   [ -n "$fresh" ] || { echo "  종합 생략: 접을 라운드 리뷰 없음 (이미 종합됨)"; return 0; }
-  prev=$(ls -tr "$tdir"/rounds/review-*.md 2>/dev/null || true)
+  prev=$(ls -tr "$tdir"/rounds/review-*.html 2>/dev/null || true)
   rounds=$(printf '%s\n%s\n' "$prev" "$fresh" | grep -v '^$' || true)
   n=$(printf '%s\n' "$rounds" | wc -l | tr -d ' ')
 
@@ -183,19 +219,20 @@ do_consolidate() { # $1 브랜치
     sleep 1; waited=$((waited + 1))
   done
 
-  out="$tdir/review.md"
+  out="$tdir/review.html"
   # 기계층은 스크립트가 쓴다 (리뷰 보고서와 같은 원칙 — LLM 이 못 건드려야 사실로 읽힌다)
   {
-    printf '# %s — 티켓 종합 (라운드 %s)  %s\n\n' "$br" "$n" "$(date '+%Y-%m-%d %H:%M')"
-    printf '## 기계 검증 (라운드별)\n\n'
+    report_head "$br — 티켓 종합 (라운드 $n)" "$(date '+%Y-%m-%d %H:%M')"
+    printf '<section class="machine">\n<h2>기계 검증 (라운드별)</h2>\n<ul>\n'
     i=0
     printf '%s\n' "$rounds" | while IFS= read -r f; do
       i=$((i + 1))
-      v=$(grep -m1 '^verify:' "$f" 2>/dev/null || true)
+      # 마크업을 건너뛰고 한 줄만 집는다 — 훅이 <p> 안에 넣든 밖에 넣든 걸린다.
+      v=$(grep -m1 -o 'verify: [^<]*' "$f" 2>/dev/null || true)
       [ -n "$v" ] || v='verify: 기록 없음'
-      printf -- '- round %s: `rounds/%s` — %s\n' "$i" "$(basename "$f")" "$v"
+      printf -- '<li>round %s: <code>rounds/%s</code> — %s</li>\n' "$i" "$(basename "$f")" "$v"
     done
-    printf '\n'
+    printf '</ul>\n</section>\n\n'
   } > "$out"
 
   ok=0
@@ -206,7 +243,8 @@ do_consolidate() { # $1 브랜치
          cat "$tdir/spec.html" 2>/dev/null || printf '(스펙 파일 없음)\n'
          printf '\n# 라운드 리뷰 (오래된 것부터)\n'
          printf '%s\n' "$rounds" | while IFS= read -r f; do
-           printf '\n## %s\n\n' "$(basename "$f")"; cat "$f"
+           # 머리(doctype·style)는 빼고 본문만 — 스타일 블록은 리뷰 재료가 아니다
+           printf '\n## %s\n\n' "$(basename "$f")"; sed '1,/<\/style>/d' "$f"
          done
        } | (
          cd "$here" && "$CLAUDE_BIN" -p "$(cat "$SELF_DIR/closing-prompt.md")" \
@@ -217,14 +255,16 @@ do_consolidate() { # $1 브랜치
   fi
   if [ "$ok" = 0 ]; then
     # 종합이 안 되면 이어붙이기라도 한다 — 라운드 파일이 rounds/ 로 옮겨지므로 본문이 여기 남아야 한다.
-    notify "$here" "종합 리뷰 생성 실패: $br — 라운드 리뷰를 이어붙였다 ($TICKET_DIR/$slug/review.md)"
-    printf '## 종합 실패 — 라운드 리뷰 원문\n\n' >> "$out"
+    notify "$here" "종합 리뷰 생성 실패: $br — 라운드 리뷰를 이어붙였다 ($TICKET_DIR/$slug/review.html)"
+    printf '<section>\n<h2>종합 실패 — 라운드 리뷰 원문</h2>\n' >> "$out"
     printf '%s\n' "$rounds" | while IFS= read -r f; do
-      printf '\n### %s\n\n' "$(basename "$f")"; cat "$f"
+      # 각 라운드도 완결된 HTML 이라 머리를 지우고 붙인다 (doctype 이 중첩되면 안 된다)
+      printf '\n<h3>%s</h3>\n' "$(basename "$f")"; sed '1,/<\/style>/d' "$f"
     done >> "$out"
+    printf '</section>\n' >> "$out"
   fi
 
-  # 라운드 원본은 남긴다. 폴더 루트에는 review.md 하나만 보이게. (prev 는 이미 rounds/ 안이다)
+  # 라운드 원본은 남긴다. 폴더 루트에는 review.html 하나만 보이게. (prev 는 이미 rounds/ 안이다)
   mkdir -p "$tdir/rounds"
   printf '%s\n' "$fresh" | while IFS= read -r f; do mv "$f" "$tdir/rounds/"; done
 
@@ -232,14 +272,14 @@ do_consolidate() { # $1 브랜치
   if [ -f "$rdir/queue.md" ]; then
     grep -v -- "]($slug/review-" "$rdir/queue.md" > "$rdir/queue.md.tmp" || true
     mv "$rdir/queue.md.tmp" "$rdir/queue.md"
-    printf -- '- [%s](%s/review.md) 종합 %s라운드 %s — %s\n' \
+    printf -- '- [%s](%s/review.html) 종합 %s라운드 %s — %s\n' \
       "$br" "$slug" "$n" "$(date '+%m-%d %H:%M')" "$(spec_title "$tdir")" \
       >> "$rdir/queue.md"
   fi
 
   rm -rf "$lock"
   # ${n} 로 감싼다 — sh 가 `$n건` 을 변수명 'n건' 으로 읽어 set -u 에 걸린다
-  echo "  종합: $TICKET_DIR/$slug/review.md (라운드 ${n}건 → rounds/ 로 이동, 큐 1줄로 접힘)"
+  echo "  종합: $TICKET_DIR/$slug/review.html (라운드 ${n}건 → rounds/ 로 이동, 큐 1줄로 접힘)"
 }
 
 # ---------------------------- 모드 구현 ------------------------------------
@@ -321,6 +361,18 @@ if [ "${1:-}" = "--selftest" ]; then
   [ -z "$(spec_title "$st/없는폴더")" ] \
     || { echo "실패: spec.html 없으면 빈 값이어야 함 (호출부가 커밋 제목으로 폴백한다)"; fail=1; }
   rm -rf "$st"
+  # 보고서 HTML: 훅이 쓴 머리+기계층에서 종합이 verify 한 줄을 다시 집어내고,
+  # 머리 잘라내기가 doctype 을 지우는가. 이 둘이 깨지면 종합 보고서가 조용히 망가진다.
+  rt=$(mktemp -d)
+  { report_head 'fix-x → dev' '2026-01-01 00:00'
+    printf '<section class="machine">\n<h2>기계 검증</h2>\n<p>verify: 통과 — v.log</p>\n</section>\n'
+  } > "$rt/review-abc.html"
+  [ "$(grep -m1 -o 'verify: [^<]*' "$rt/review-abc.html")" = 'verify: 통과 — v.log' ] \
+    || { echo "실패: 보고서에서 verify 줄 추출 (종합의 기계층이 빈다)"; fail=1; }
+  if sed '1,/<\/style>/d' "$rt/review-abc.html" | grep -q '<!doctype'; then
+    echo "실패: 머리 잘라내기 — 종합 보고서에 doctype 이 중첩된다"; fail=1
+  fi
+  rm -rf "$rt"
   # 훅 4개가 이 파일을 가리키고 실행 가능한가
   for h in pre-merge-commit pre-commit post-merge post-commit; do
     [ -x "$SELF_DIR/$h" ] || { echo "실패: 훅 없음/실행권한 없음 — $h"; fail=1; }
@@ -379,7 +431,7 @@ case "$mode" in
     do_report "$(git rev-parse HEAD^1)" "$(git rev-parse HEAD)" "$label"
     ;;
 
-  consolidate)                # ticket.sh close 가 부른다 (훅 아님). 라운드 리뷰 → review.md 하나
+  consolidate)                # ticket.sh close 가 부른다 (훅 아님). 라운드 리뷰 → review.html 하나
     [ "$branch" = "$DEV_BRANCH" ] || { echo "consolidate 는 $DEV_BRANCH 워크트리에서만" >&2; exit 1; }
     [ -n "${2:-}" ] || { echo "사용: dev-sync.sh consolidate <브랜치>" >&2; exit 1; }
     do_consolidate "$2"

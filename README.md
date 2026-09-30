@@ -20,6 +20,9 @@ workflow-scaffold/
   skills/                               → dev 워크트리 .claude/skills/ 로 설치한다
     writing-ticket-specs/               스펙 5슬롯 검토
     writing-korean-explainers/          사람에게 하는 보고·설명 작성
+    writing-session-worklogs/           세션 작업 기록 → docs/worklog/. 전역 스킬이라 설치 대상이 아니다
+                                        (~/.claude/skills/ 에 심링크로 건다 — 아래 '전역 스킬' 절)
+    building-project-llm-wiki/          프로젝트 문서를 LLM 위키(raw·위키·해시 대장·ingest 훅)로 세운다. 전역 스킬
 ```
 
 ---
@@ -200,6 +203,19 @@ cd <dev워크트리> && sh ../.githooks/verify.sh; echo "exit=$?"
 `CLAUDE.md` 에 `templates/CLAUDE-workflow-section.md` 내용을 붙이는 일이다. Orca 설정 화면에만
 넣어두면 워커가 읽지 못하고, 그러면 아무도 `[done]` 을 붙이지 않아서 dev 세션이 계속 기다린다.
 
+## 전역 스킬 둘은 따로 건다
+
+`writing-session-worklogs`(세션 기록)와 `building-project-llm-wiki`(프로젝트 문서를 LLM 위키로 세우기)는
+이 워크플로 전용이 아니라 **아무 프로젝트에서나 쓰는 스킬**이다. 그래서 프로젝트마다 복사하지 않고 전역에
+한 번만 건다 — 두 벌이 되면 갈린다.
+
+```sh
+ln -s "$(pwd)/skills/writing-session-worklogs" ~/.claude/skills/writing-session-worklogs
+ln -s "$(pwd)/skills/building-project-llm-wiki" ~/.claude/skills/building-project-llm-wiki
+```
+
+`install.sh` 는 이 두 스킬을 건너뛴다(`건너뜀(전역 스킬)`). 수정은 이 레포의 파일 하나에서만 한다.
+
 ---
 
 # 한 티켓 돌리기
@@ -217,12 +233,13 @@ cd <dev워크트리>
 #   질문 통지가 오면 답도 send 로 보낸다 (orca orchestration reply 는 턴이 끝난 워커를 못 깨운다)
 
 .githooks/ticket.sh merge fix-foo       # ★ 판정 + 보고서. [done] 통지면 승인 없이 즉시
-#   .tickets/queue.md 마지막 줄 → review-<sha>.md 를 읽고 사람에게 요약한다
+#   .tickets/queue.md 마지막 줄 → review-<sha>.html 를 읽고 사람에게 요약한다
 #   요약은 /writing-korean-explainers 규칙으로: 결론 첫 줄 → 기능 영향 있음/없음 → 마지막에 선택지
 #   보고서를 그대로 붙여넣지 마라. 요약을 사람이 다시 하게 된다
 
 .githooks/ticket.sh send fix-foo /tmp/rework.md   # 재요청. 같은 워크트리를 쓴다
-.githooks/ticket.sh close fix-foo                 # 워크트리 제거 + 라운드 리뷰를 review.md 로 종합
+.githooks/ticket.sh close fix-foo                 # 워크트리 제거 + 라운드 리뷰를 review.html 로 종합
+#   close 뒤 /writing-session-worklogs 로 과정을 docs/worklog/ 에 한 장 남긴다 — 보고서는 결과, 이쪽은 과정이다
 ```
 
 산출물은 티켓 폴더 하나에 모인다.
@@ -233,17 +250,19 @@ cd <dev워크트리>
 │                          형식: - [브랜치](링크) 시각 — <spec.html 의 h1>
 └─ <티켓>/
    ├─ spec.html            사람이 쓴 지시서. 워커의 유일한 입력이다
+   ├─ diagram.html         (선택) 흐름이 복잡할 때만. /archify 로 그려 spec 에서 링크한다
    ├─ verify-<sha>.log     검사 결과. 시도마다 따로 쌓여서 덮이지 않는다
-   ├─ review-<sha>.md      머지 한 번당 보고서 한 장
-   ├─ review.md            close 때 라운드 보고서들을 합친 최종본
+   ├─ review-<sha>.html    머지 한 번당 보고서 한 장. 브라우저에서 연다
+   ├─ review.html          close 때 라운드 보고서들을 합친 최종본. 확인 항목은 체크박스다
    └─ rounds/              합쳐진 뒤 옮겨진 라운드 원본
 ```
 
-보고서는 두 부분으로 나뉘어 있다. 위쪽 `## 기계 검증` 줄은 훅이 직접 쓰고, 아래쪽 판단은 리뷰
-에이전트가 쓴다. 둘을 섞어놓으면 LLM의 의견이 기계가 확인한 사실처럼 읽히기 때문이다.
+보고서는 스펙과 같은 HTML 한 장이다. 훅이 머리(제목·스타일)와 `기계 검증` 블록까지 쓴 파일에
+리뷰 에이전트의 출력이 `<section>` 조각으로 이어붙는다. 왼쪽에 파란 줄이 그어진 `기계 검증`
+블록은 LLM이 건드리지 못한다 — 둘을 섞어놓으면 LLM의 의견이 기계가 확인한 사실처럼 읽힌다.
 
 읽는 순서는 항상 같다. `queue.md` 의 마지막 줄을 보고, 거기 링크된 보고서를 읽고, 실패한
-경우에만 검사 로그를 연다. `close` 된 티켓은 `review.md` 하나만 읽는다.
+경우에만 검사 로그를 연다. `close` 된 티켓은 `review.html` 하나만 읽는다.
 
 ---
 
@@ -323,7 +342,7 @@ cd <dev워크트리>
 | 16 | `orchestration check` 를 `--terminal` 없이 부르면 어떤 메일박스도 열리지 않고 항상 `count:0` 이다(에러도 안 낸다). 통지는 하네스가 턴 경계에 주입하는 경로로만 보여서, 사람이 ESC를 눌러 턴을 끊을 때까지 dev가 안 깨어난다 | `wait` 가 `self_handle()` 로 자기 핸들을 명시한다. `ORCA_PANE_KEY="<tabId>:<leafId>"` 를 `terminal list` 레코드와 매칭해 얻는다. 못 찾으면 에러로 죽인다 — 조용히 빈손을 돌리면 "워커가 아직 작업 중"으로 오독된다 |
 | 17 | 하네스 주입 경로는 메시지를 읽음 처리하지 않는다 → 옛 라운드 `worker_done` 이 미읽음으로 쌓이고, `wait` 가 그것을 즉시 물어와 아직 돌고 있는 워커를 두고 merge로 넘어간다 | `new`·`send` 가 dispatch 직전에 `drain_notices()` 로 미읽음을 비운다 |
 | 18 | `orca` 는 실패 시 exit 1 + `{"ok":false}` 를 stdout으로 낸다. `set -e` 아래 `X=$(orca ...)` 는 출력 한 줄 없이 죽고, `orca ... \| jq -r ...` 는 파이프라인 종료 코드가 `jq` 것이라 실패가 사라지고 값만 `"null"` 이 된다 | `orca_ok()` 하나로 감싼다. `\|\| true` 로 받아 `.ok` 를 판정하고, 진단은 stderr로, 값 추출용 `jq` 는 다음 줄에서 따로 돌린다. stderr를 병합하지 않는 이유는 `check --wait` 의 keepalive가 JSON을 깨뜨리기 때문이다 |
-| 19 | `terminal wait --for tui-idle` 도 타임아웃 시 `{"ok":false}` + exit 1 이다 — 그 시점에 워크트리는 이미 만들어져 있다 | `orca_ok` 가 그 사실을 찍는다. `close` 는 `worktree rm` 실패를 삼키고 `review.md` 종합까지 간다 |
+| 19 | `terminal wait --for tui-idle` 도 타임아웃 시 `{"ok":false}` + exit 1 이다 — 그 시점에 워크트리는 이미 만들어져 있다 | `orca_ok` 가 그 사실을 찍는다. `close` 는 `worktree rm` 실패를 삼키고 `review.html` 종합까지 간다 |
 
 디버깅할 때는 "훅이 안 돈다"와 "훅은 돌지만 조건이 안 맞다"를 먼저 갈라야 한다. 훅 파일을
 `exit 1` 로 바꿔서 실제 실행 여부를 확인하는 것이 가장 빠르다.
@@ -341,7 +360,7 @@ cd <dev워크트리>
 게이트처럼 굳는다. 리뷰의 목적은 승인 도장이 아니라 읽을 범위를 줄이는 것이다. 7개 파일을 안
 읽게 하는 게 아니라 18줄로 좁혀서 읽게 한다.
 
-**기계층과 판단층을 분리한다.** 보고서의 `## 기계 검증` 블록은 훅이 쓰고 LLM은 건드리지 못한다.
+**기계층과 판단층을 분리한다.** 보고서의 `기계 검증` 블록은 훅이 쓰고 LLM은 건드리지 못한다.
 섞이면 의견이 사실의 신뢰도를 빌려간다.
 
 **게이트에 넣을 도구는 기존 에러가 0이어야 한다.** 지금 실패 중인 검사를 넣으면 게이트가

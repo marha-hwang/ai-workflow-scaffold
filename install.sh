@@ -83,6 +83,9 @@ for s in "$SRC"/skills/*/; do
   s=${s%/}   # ⚠ 트레일링 슬래시를 떼야 한다. BSD cp 는 `cp -R dir/ dest/` 를 "dir 의 내용을 dest 로"
              #   로 해석해서 SKILL.md 가 skills/ 밑에 그대로 떨어진다(스킬로 인식 안 됨)
   n=$(basename "$s")
+  # 전역(~/.claude/skills)에 두는 스킬은 프로젝트에 또 깔지 않는다 — 이름이 겹치면 두 벌이 갈린다.
+  # 이 워크플로 전용이 아닌 스킬만 여기 들어간다.
+  case "$n" in writing-session-worklogs|building-project-llm-wiki) echo "건너뜀(전역 스킬): $n"; continue ;; esac
   [ -e "$DEVWT/.claude/skills/$n" ] && { echo "건너뜀(이미 있음): $DEVWT/.claude/skills/$n"; continue; }
   cp -R "$s" "$DEVWT/.claude/skills/"
 done

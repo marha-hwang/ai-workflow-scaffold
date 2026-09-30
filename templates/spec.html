@@ -2,8 +2,10 @@
 <meta charset="utf-8">
 <title><티켓 제목></title>
 <style>
-  :root { color-scheme: light dark; }
-  body { max-width: 46rem; margin: 3rem auto; padding: 0 1.5rem;
+  :root { color-scheme: light dark; --bg: #fff; --fg: #1a1a1a; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #16181d; --fg: #e8e8e8; } }
+  body { background: var(--bg); color: var(--fg);
+         max-width: 46rem; margin: 3rem auto; padding: 0 1.5rem;
          font: 16px/1.75 -apple-system, system-ui, sans-serif; }
   h1 { font-size: 1.5rem; margin: 0 0 2.5rem; }
   section { border-top: 1px solid rgba(128,128,128,.3); margin-top: 2rem; padding-top: 1rem; }
@@ -30,6 +32,10 @@
 
   <style> 은 손대지 않는다. 골격 밖의 태그·클래스·인라인 style 도 쓰지 않는다 —
   워커가 읽을 유일한 입력이라 신호가 마크업에 묻히면 안 된다.
+
+  흐름이 글로 안 잡히면(단계 대여섯 이상·상태 전이·여러 시스템 호출 순서) /archify 로
+  diagram.html 을 그려 같은 폴더에 두고 <p><a href="diagram.html">흐름도</a></p> 한 줄로 건다.
+  그림은 사람용 보조물이다 — 워커에게는 이 파일의 본문 텍스트만 전달되므로 조건·분기는 글로도 적는다.
 -->
 
 <h1><티켓 제목></h1>

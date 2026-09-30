@@ -148,7 +148,7 @@ new)
     | sed 's|^refs/heads/||' | head -1)
   [ -n "$ACTUAL" ] || ACTUAL=$BR
 
-  # 티켓 산출물은 한 폴더에 모인다: spec.html + verify-<sha>.log + review-<sha>.md (훅이 씀)
+  # 티켓 산출물은 한 폴더에 모인다: spec.html + verify-<sha>.log + review-<sha>.html (훅이 씀)
   # 폴더명은 실제 브랜치 기준 — 훅도 실제 브랜치로 슬러그를 뽑으므로 여기서 어긋나면 보고서가 다른 폴더에 떨어진다.
   TDIR="$TICKETS/$(slug_of "$ACTUAL")"
   mkdir -p "$TDIR"
@@ -257,14 +257,14 @@ close)
   BR=${2:-}; [ -n "$BR" ] || usage
   # 워크트리만 제거한다. .tickets/<slug>/ 는 남긴다 — 스펙·검증·보고서가 티켓 기록이다
   # orca_ok 를 쓰지 않는다: 이미 제거된 워크트리를 close 하는 것은 정상 흐름(재실행·수동 정리 후)이고,
-  # 여기서 죽으면 아래 종합(review.md)이 돌지 않는다. 실패해도 안내만 하고 넘어간다.
+  # 여기서 죽으면 아래 종합(review.html)이 돌지 않는다. 실패해도 안내만 하고 넘어간다.
   if orca worktree rm --worktree "branch:$BR" --json; then
     echo "워크트리 제거: $BR  (기록 유지: $TICKETS/$(slug_of "$BR")/)"
   else
     echo "  ⚠ 워크트리 제거 실패(이미 없을 수 있다) — 'orca worktree ps --json' 확인. 종합은 계속한다"
   fi
   rm -f "$TICKETS/$(slug_of "$BR")/terminal"   # 핸들은 워크트리와 함께 죽는다. 남기면 다음 티켓이 죽은 핸들을 집는다
-  # 라운드 리뷰 N개 → review.md 하나. 워크트리를 없앤 뒤에 도는 이유: 지금 dev 가 티켓의 최종 코드다.
+  # 라운드 리뷰 N개 → review.html 하나. 워크트리를 없앤 뒤에 도는 이유: 지금 dev 가 티켓의 최종 코드다.
   # 종합이 실패해도 close 는 실패가 아니다(워크트리는 이미 제거됐다) — 안내만 하고 넘어간다.
   sh "$SELF_DIR/dev-sync.sh" consolidate "$BR" || echo "  ⚠ 종합 실패 — 'sh $SELF_DIR/dev-sync.sh consolidate $BR' 로 다시 시도"
   ;;

@@ -31,8 +31,10 @@ description: Use when a 티켓 스펙 for the Orca 티켓 워크플로 is being 
 <meta charset="utf-8">
 <title>(티켓 한 줄 제목)</title>
 <style>
-  :root { color-scheme: light dark; }
-  body { max-width: 46rem; margin: 3rem auto; padding: 0 1.5rem;
+  :root { color-scheme: light dark; --bg: #fff; --fg: #1a1a1a; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #16181d; --fg: #e8e8e8; } }
+  body { background: var(--bg); color: var(--fg);
+         max-width: 46rem; margin: 3rem auto; padding: 0 1.5rem;
          font: 16px/1.75 -apple-system, system-ui, sans-serif; }
   h1 { font-size: 1.5rem; margin: 0 0 2.5rem; }
   section { border-top: 1px solid rgba(128,128,128,.3); margin-top: 2rem; padding-top: 1rem; }
@@ -96,10 +98,26 @@ description: Use when a 티켓 스펙 for the Orca 티켓 워크플로 is being 
 | `<span class="guess">(추정)</span>` | 사람이 "네가 채워"라 해서 스킬이 채운 자리 |
 | `<code>` | 파일 경로·식별자·실제 문자열 값 |
 | `class="keep"` | `손대지 말 것` 섹션 하나뿐. 빨간 줄이 금지 구역 표시다 |
+| `<a href="diagram.html">` | 그림 한 장을 거는 링크. 아래 `그림이 필요할 때` 참고 |
 
 - `<h1>` 은 티켓 한 줄 제목이다. 큐(`queue.md`)가 이 줄을 읽어 티켓을 식별한다
 - 새 `class`·인라인 `style`·스크립트·외부 폰트·이미지를 추가하지 않는다
 - 표가 필요하면 `<table>` 그대로 쓴다. 스타일은 없어도 읽힌다
+
+## 그림이 필요할 때 (archify)
+
+**글로 쓰면 슬롯이 길어지는 것만** 그린다 — 단계가 대여섯을 넘는 흐름, 상태 전이,
+여러 시스템을 오가는 호출 순서. 화면 레이아웃·UI 시안은 대상이 아니다.
+슬롯 다섯 개를 채우고도 사람이 "그래서 순서가 어떻게 되는 거냐"를 되물으면 그때 그린다.
+
+- `/archify` 로 그려 `.tickets/<슬러그>/diagram.html` 에 둔다. 슬러그는 `ticket.sh new` 출력의
+  `산출물=` 경로다 — 발사 전에 그렸으면 발사 후 그 폴더로 옮긴다
+- 스펙에서는 한 줄로 건다: `<p><a href="diagram.html">흐름도</a></p>`
+- 인라인 SVG·`<img>` 로 넣지 않는다. 스펙 본문은 워커가 읽을 텍스트로 남겨야 한다
+
+**그림은 슬롯을 대신하지 않는다.** dispatch 는 `spec.html` **본문 텍스트**만 워커에게 넣으므로
+그림은 워커에게 전달되지 않는다 — 사람이 발사 전에 검토하고 `close` 때 다시 보는 보조물이다.
+그림에만 있는 조건·분기는 요구사항 슬롯에도 글로 적는다.
 
 ## 슬롯 판정 기준
 
@@ -150,8 +168,8 @@ description: Use when a 티켓 스펙 for the Orca 티켓 워크플로 is being 
 
 **판정은 발사 시점이 아니라 머지 시점에 일어난다.** `[done]` 커밋은 선언일 뿐이고,
 `pre-merge-commit` 훅이 머지 결과 트리에서 `verify.sh` 를 돌려 통과분만 dev 에 넣는다.
-라운드 보고서는 `.tickets/<slug>/review-<sha>.md`, 실패 로그는 `verify-<sha>.log`.
-`close` 가 라운드 보고서들을 `review.md` 한 장으로 접는다(원본은 `rounds/`) — **`spec.html` 의 `요구사항`·`미정` 슬롯이 그 종합의 기준선**이 된다.
+라운드 보고서는 `.tickets/<slug>/review-<sha>.html`, 실패 로그는 `verify-<sha>.log`.
+`close` 가 라운드 보고서들을 `review.html` 한 장으로 접는다(원본은 `rounds/`) — **`spec.html` 의 `요구사항`·`미정` 슬롯이 그 종합의 기준선**이 된다.
 슬롯을 비워두면 종합이 "무엇을 하려던 티켓인지"를 판정할 근거를 잃는다.
 
 ## Common Mistakes
