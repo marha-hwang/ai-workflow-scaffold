@@ -20,7 +20,8 @@ workflow-scaffold/
   skills/                               → dev 워크트리 .claude/skills/ 로 설치한다
     writing-ticket-specs/               스펙 5슬롯 검토
     writing-korean-explainers/          사람에게 하는 보고·설명 작성
-    ticket-hub/                         티켓이 여럿일 때 메인 dev 세션(허브) 운영
+    planning-ticket-bundles/            큰 작업을 하위 티켓 묶음으로 계획 (시나리오 → 결정 → 파일 소유권 분할 → plan.tsv)
+    ticket-hub/                         묶음 작업을 메인 dev 세션(허브)으로 운영
     writing-session-worklogs/           세션 작업 기록 → docs/worklog/. 전역 스킬이라 설치 대상이 아니다
                                         (~/.claude/skills/ 에 심링크로 건다 — 아래 '전역 스킬' 절)
     building-project-llm-wiki/          프로젝트 문서를 LLM 위키(raw·위키·해시 대장·ingest 훅)로 세운다. 전역 스킬
