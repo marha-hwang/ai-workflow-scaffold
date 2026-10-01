@@ -12,7 +12,20 @@
 #   ticket.sh wait [timeout_ms]                worker_done/escalation/decision_gate 대기 (기본 9분)
 #   ticket.sh merge <브랜치>                   dev 로 머지 (훅이 verify → 보고서)
 #   ticket.sh send <브랜치> <파일|텍스트>        재요청 (같은 워크트리, 브랜치 유지)
-#   ticket.sh close <브랜치>                   워크트리 제거
+#   ticket.sh close <브랜치>                   워크트리 제거 (+ 티켓 세션 종료, 새로 풀린 티켓 출력)
+#
+# 허브(메인 dev 세션) — 묶음 작업(bundles/<묶음>/plan.tsv)의 하위 티켓을 돌린다. 판정·계획은 여전히 하지 않는다:
+#   발사 조건은 "의존 티켓이 모두 close 됨 + 스펙에 미정 표시 없음 + 동시 실행 < TICKET_WIP(기본 3)" 뿐이고,
+#   close 는 사람만 한다(그래서 이 조건이 두 번째 게이트가 되지 않는다).
+#   ticket.sh hub                              이 터미널을 허브로 등록
+#   ticket.sh board [묶음]                     하위 티켓 상태표 (묶음을 안 주면 전부)
+#   ticket.sh ready [묶음]                     지금 발사할 수 있는 id
+#   ticket.sh spawn <티켓>                     티켓 dev 세션을 새 터미널로 띄운다 (그 세션이 new→wait→merge→요약)
+#   ticket.sh hub-wait [timeout_ms]            티켓 세션의 알림 대기 (허브에서)
+#   ticket.sh tell <티켓> <파일|텍스트>          사람 결정을 티켓 세션에 전달 (허브에서)
+#   ticket.sh notify <티켓> <상태> [본문]        티켓 세션 → 허브 알림 (티켓 세션에서)
+#   <티켓> = '<묶음>/<id>'. 묶음이 하나뿐이거나 TICKET_BUNDLE 이 있으면 '<id>' 만 써도 된다
+#   ticket.sh selftest                         발사 조건 계산 자체 점검 (orca 불필요)
 #
 # ⚠ 브랜치명은 orca 가 정규화한다: `new feat/x` 로 발사해도 실제 브랜치는 `feat-x` 다.
 #   merge·send·close 는 **new 가 출력한 실제 이름**을 써라. new 가 달라지면 경고를 찍는다.
@@ -24,14 +37,71 @@ set -eu
 REPO=name:@@REPO@@ # Orca 레포 이름. install.sh 가 채운다
 SELF_DIR=$(cd "$(dirname "$0")" && pwd) # dev-sync.sh 와 같은 폴더 (close 가 종합을 위임한다)
 DEV=$(git rev-parse --show-toplevel)   # dev 워크트리 (여기서만 실행한다)
-TICKETS="$DEV/.tickets"
+TICKETS="${TICKETS_DIR:-$DEV/.tickets}"
+# 티켓 폴더는 작업 종류로 갈린다. 경로는 dev-sync.sh 의 ticket_rel 한 곳이 정한다(훅도 같은 함수로 보고서를 쓴다):
+#   single/<slug>/            단일 작업
+#   bundles/<묶음>/plan.tsv    묶음 작업의 하위 티켓 목록. 한 줄 = id<TAB>브랜치<TAB>의존(쉼표, 없으면 -)<TAB>제목
+#   bundles/<묶음>/<slug>/     하위 티켓. 브랜치는 처음부터 '/' 없이 쓴다 — 그래야 발사 전에 폴더가 정해진다
+# 티켓 폴더 안: spec.html(사람) · verify-*·review-*·rounds/(훅) · terminal(워커 핸들) · closed(close)
+#   묶음 티켓만: session(티켓 세션 핸들) · summary.md(티켓 세션 요약) · inbox.md(허브 지시) · prompt.md
+BUNDLES="$TICKETS/bundles"
+WIP=${TICKET_WIP:-3}
 
 usage() {
   echo "ticket.sh new <feat/브랜치> <스펙파일> | wait [ms] | merge <브랜치> | send <브랜치> <텍스트> | close <브랜치>"
+  echo "          hub | board [묶음] | ready [묶음] | spawn <티켓> | hub-wait [ms] | tell <티켓> <파일|텍스트> | notify <티켓> <상태> [본문] | selftest"
   exit 1
 }
 
 slug_of() { printf '%s' "$1" | tr / -; }
+tdir_of() { sh "$SELF_DIR/dev-sync.sh" ticket-dir "$1" "$TICKETS"; }   # 브랜치 → 티켓 폴더 (단일·묶음 공통)
+die() { echo "$*" >&2; exit 1; }
+
+# ---- 허브: 발사 조건 계산 (결정론. orca 를 부르지 않는다 — selftest 가 이 부분만 본다) ----
+# 묶음 고르기: 인자 > TICKET_BUNDLE > 묶음이 하나뿐이면 그것
+pick_bundle() {
+  if [ -n "${1:-}" ]; then [ -f "$BUNDLES/$1/plan.tsv" ] || die "묶음 없음: $1"; printf '%s' "$1"; return; fi
+  if [ -n "${TICKET_BUNDLE:-}" ]; then printf '%s' "$TICKET_BUNDLE"; return; fi
+  _n=$(ls -d "$BUNDLES"/*/plan.tsv 2>/dev/null | wc -l | tr -d ' ')
+  [ "$_n" = 1 ] || die "묶음이 ${_n}개 — '<묶음>/<id>' 또는 묶음 이름을 줘라 ($(ls "$BUNDLES" 2>/dev/null | tr '\n' ' '))"
+  basename "$(dirname "$(ls -d "$BUNDLES"/*/plan.tsv)")"
+}
+# '<묶음>/<id>' 또는 '<id>' → B, ID
+ref() {
+  case "$1" in
+    */*) B=${1%%/*}; ID=${1#*/}; pick_bundle "$B" >/dev/null ;;
+    *) B=$(pick_bundle); ID=$1 ;;
+  esac
+  [ -n "$(plan_field "$B" "$ID" 2)" ] || die "묶음 $B 에 티켓 $ID 없음"
+}
+bundles() { for _p in "$BUNDLES"/*/plan.tsv; do [ -f "$_p" ] && basename "$(dirname "$_p")"; done; true; }
+plan_rows() { grep -v '^#' "$BUNDLES/$1/plan.tsv" 2>/dev/null | grep -v '^[[:space:]]*$' || true; }
+plan_field() { plan_rows "$1" | awk -F'\t' -v id="$2" -v n="$3" '$1==id{print $n; exit}'; }
+btdir() { printf '%s/%s/%s' "$BUNDLES" "$1" "$(plan_field "$1" "$2" 2)"; }   # 묶음 $1 의 티켓 $2 폴더
+# 상태 하나: closed > running > spec-missing > spec-tbd > blocked > ready
+status_of() { # $1 묶음  $2 id
+  _t=$(btdir "$1" "$2")
+  [ -f "$_t/closed" ] && { echo closed; return; }
+  # running 은 세션을 띄운 순간부터다(session). new 가 돌기 전에도 동시 실행 수에 들어가야 WIP 를 넘지 않는다
+  [ -f "$_t/session" ] && { echo running; return; }
+  [ -f "$_t/spec.html" ] || { echo spec-missing; return; }
+  # 미정 표시가 남은 스펙은 발사하지 않는다 — "미정 칸은 스펙을 쓰기 전에 정한다"를 기계로 강제
+  grep -q 'class="tbd"' "$_t/spec.html" && { echo spec-tbd; return; }
+  for _d in $(plan_field "$1" "$2" 3 | tr ',' ' '); do
+    [ "$_d" = - ] && continue
+    [ -f "$(btdir "$1" "$_d")/closed" ] || { echo blocked; return; }
+  done
+  echo ready
+}
+# 동시 실행 수는 묶음 전체에서 센다 — 상한은 사람이 리뷰를 감당할 수 있는 수라 묶음마다 따로 두지 않는다
+running_count() {
+  _c=0
+  for _s in "$BUNDLES"/*/*/session; do
+    if [ -f "$_s" ] && [ ! -f "$(dirname "$_s")/closed" ]; then _c=$((_c + 1)); fi
+  done
+  echo "$_c"
+}
+ready_ids() { for _id in $(plan_rows "$1" | cut -f1); do [ "$(status_of "$1" "$_id")" = ready ] && echo "$_id"; done; true; }
 
 # orca CLI 실행 + 성공 판정. 성공이면 JSON 을 stdout 으로 넘기고, 실패면 이유를 stderr 에 찍고 죽는다.
 # `--json` 은 이 함수가 붙인다 — 호출부에 쓰지 마라.
@@ -69,7 +139,7 @@ orca_ok() {
 #   레코드에 agentType 필드도 없다 — 옛 구현이 두 가지 다 기대해서 send 가 항상 실패했다.
 #   그래서 ①발사 때 적어둔 핸들을 쓰고 ②없으면 branch 로 직접 고른다(에이전트 터미널 = 제목이 ✳ 로 시작. Setup 터미널과 구분).
 handle_of() {
-  _saved=$(cat "$TICKETS/$(slug_of "$1")/terminal" 2>/dev/null || true)
+  _saved=$(cat "$(tdir_of "$1")/terminal" 2>/dev/null || true)
   _all=$(orca_ok terminal list)
   if [ -n "$_saved" ] \
      && printf '%s' "$_all" | jq -e --arg h "$_saved" '.result.terminals[]|select(.handle==$h)' >/dev/null 2>&1; then
@@ -149,8 +219,9 @@ new)
   [ -n "$ACTUAL" ] || ACTUAL=$BR
 
   # 티켓 산출물은 한 폴더에 모인다: spec.html + verify-<sha>.log + review-<sha>.html (훅이 씀)
-  # 폴더명은 실제 브랜치 기준 — 훅도 실제 브랜치로 슬러그를 뽑으므로 여기서 어긋나면 보고서가 다른 폴더에 떨어진다.
-  TDIR="$TICKETS/$(slug_of "$ACTUAL")"
+  # 폴더는 실제 브랜치로 훅과 같은 함수(ticket-dir)가 정한다 — 따로 정하면 보고서가 다른 폴더에 떨어진다.
+  # 묶음 하위 티켓이면 bundles/<묶음>/<slug>/, 아니면 single/<slug>/
+  TDIR=$(tdir_of "$ACTUAL")
   mkdir -p "$TDIR"
   # 스펙을 이미 티켓 폴더에 써둔 경우 cp 가 "same file" 로 실패한다 (set -e 라 그대로 죽음)
   [ "$(cd "$(dirname "$SPEC")" && pwd)/$(basename "$SPEC")" = "$TDIR/spec.html" ] \
@@ -199,7 +270,7 @@ wait)
 
 merge)
   BR=${2:-}; [ -n "$BR" ] || usage
-  SLUG=$(slug_of "$BR")
+  TD=$(tdir_of "$BR")
   # dev 워크트리는 티켓들이 공유한다 — 다른 머지가 진행 중이면 git 이 즉시 거부하고,
   # 그 실패가 아래 폴백에서 "게이트 실패"로 잘못 보고됐다(verify 는 돌지도 않았다). 먼저 끊는다.
   if git -C "$DEV" rev-parse --verify -q MERGE_HEAD >/dev/null 2>&1; then
@@ -213,7 +284,7 @@ merge)
   # --no-ff 고정 — ff 머지는 pre-merge-commit 을 건너뛰어 게이트가 우회된다.
   SHA=$(git -C "$DEV" rev-parse --short "$BR")
   if git -C "$DEV" merge --no-ff --no-edit "$BR"; then
-    echo "머지 완료: $BR  (보고서: $TICKETS/$SLUG/)"
+    echo "머지 완료: $BR  (보고서: $TD/)"
     exit 0
   fi
   # 실패 원인이 둘이라 구분해야 한다: 파일 충돌은 사람 차례, 게이트 실패는 되돌린다.
@@ -224,8 +295,8 @@ merge)
   fi
   git -C "$DEV" merge --abort 2>/dev/null || true
   # 게이트가 실제로 돌았는지는 verify-<브랜치팁 sha>.log 존재로만 말할 수 있다. 없으면 머지를 시작조차 못 한 것이다.
-  if [ -f "$TICKETS/$SLUG/verify-$SHA.log" ]; then
-    echo "게이트 실패 — 머지 취소됨. verify 로그: $TICKETS/$SLUG/verify-$SHA.log"
+  if [ -f "$TD/verify-$SHA.log" ]; then
+    echo "게이트 실패 — 머지 취소됨. verify 로그: $TD/verify-$SHA.log"
   else
     echo "머지를 시작하지 못했다 — 게이트 실패가 아니다(verify 로그 없음). 위 git 메시지가 원인이다."
   fi
@@ -255,18 +326,163 @@ send)
 
 close)
   BR=${2:-}; [ -n "$BR" ] || usage
+  TD=$(tdir_of "$BR")
   # 워크트리만 제거한다. .tickets/<slug>/ 는 남긴다 — 스펙·검증·보고서가 티켓 기록이다
   # orca_ok 를 쓰지 않는다: 이미 제거된 워크트리를 close 하는 것은 정상 흐름(재실행·수동 정리 후)이고,
   # 여기서 죽으면 아래 종합(review.html)이 돌지 않는다. 실패해도 안내만 하고 넘어간다.
   if orca worktree rm --worktree "branch:$BR" --json; then
-    echo "워크트리 제거: $BR  (기록 유지: $TICKETS/$(slug_of "$BR")/)"
+    echo "워크트리 제거: $BR  (기록 유지: $TD/)"
   else
     echo "  ⚠ 워크트리 제거 실패(이미 없을 수 있다) — 'orca worktree ps --json' 확인. 종합은 계속한다"
   fi
-  rm -f "$TICKETS/$(slug_of "$BR")/terminal"   # 핸들은 워크트리와 함께 죽는다. 남기면 다음 티켓이 죽은 핸들을 집는다
+  rm -f "$TD/terminal"   # 핸들은 워크트리와 함께 죽는다. 남기면 다음 티켓이 죽은 핸들을 집는다
   # 라운드 리뷰 N개 → review.html 하나. 워크트리를 없앤 뒤에 도는 이유: 지금 dev 가 티켓의 최종 코드다.
   # 종합이 실패해도 close 는 실패가 아니다(워크트리는 이미 제거됐다) — 안내만 하고 넘어간다.
   sh "$SELF_DIR/dev-sync.sh" consolidate "$BR" || echo "  ⚠ 종합 실패 — 'sh $SELF_DIR/dev-sync.sh consolidate $BR' 로 다시 시도"
+  # 단일이든 묶음이든 closed 를 찍는다. 묶음 티켓이면 다음 티켓의 발사 조건이다 — close 는 사람만 한다
+  mkdir -p "$TD"; touch "$TD/closed"
+  S=$(cat "$TD/session" 2>/dev/null || true)
+  [ -n "$S" ] && { orca terminal close --terminal "$S" --tab --json >/dev/null 2>&1 \
+    || echo "  ⚠ 티켓 세션 종료 실패($S) — 이미 닫혔을 수 있다"; }
+  case "$TD" in "$BUNDLES"/*)
+    B=$(basename "$(dirname "$TD")")
+    NEW=$(ready_ids "$B" | tr '\n' ' ')
+    echo "묶음 $B 새로 발사 가능: ${NEW:-없음}  (동시 실행 $(running_count)/$WIP)" ;;
+  esac
+  ;;
+
+# ---------------------------------------------------------------------------- 허브
+hub)
+  ME=$(self_handle)
+  [ -n "$ME" ] || { echo "이 터미널의 핸들을 못 찾았다 — Orca 가 띄운 터미널에서 실행해야 한다"; exit 1; }
+  mkdir -p "$TICKETS"; printf '%s\n' "$ME" > "$TICKETS/hub.terminal"
+  echo "허브 등록: $ME"
+  ;;
+
+board)
+  if [ -n "${2:-}" ]; then BL=$(pick_bundle "$2"); else BL=$(bundles); fi
+  [ -n "$BL" ] || { echo "묶음 없음: $BUNDLES/<묶음>/plan.tsv"; exit 1; }
+  for B in $BL; do
+    echo "묶음 $B"
+    printf '  %-6s %-13s %-14s %s\n' id 상태 의존 제목
+    plan_rows "$B" | while IFS="$(printf '\t')" read -r id br deps title; do
+      st=$(status_of "$B" "$id")
+      [ "$st" = running ] && [ -f "$(btdir "$B" "$id")/summary.md" ] && st=running*
+      printf '  %-6s %-13s %-14s %s\n' "$id" "$st" "$deps" "$title"
+    done
+  done
+  echo "동시 실행 $(running_count)/$WIP   (* = 요약 있음: 티켓 폴더의 summary.md)"
+  ;;
+
+ready)
+  B=$(pick_bundle "${2:-}")
+  ready_ids "$B"
+  echo "남은 자리: $((WIP - $(running_count)))" >&2
+  ;;
+
+spawn)
+  [ -n "${2:-}" ] || usage
+  ref "$2"
+  ST=$(status_of "$B" "$ID")
+  [ "$ST" = ready ] || { echo "발사 불가: $B/$ID 상태=$ST"; exit 1; }
+  [ "$(running_count)" -lt "$WIP" ] || { echo "동시 실행 상한($WIP) — close 뒤에 다시. (TICKET_WIP 로 조정)"; exit 1; }
+  HUB=$(cat "$TICKETS/hub.terminal" 2>/dev/null || true)
+  [ -n "$HUB" ] || { echo "허브 미등록 — 허브 세션에서 'ticket.sh hub' 먼저"; exit 1; }
+  BR=$(plan_field "$B" "$ID" 2); TITLE=$(plan_field "$B" "$ID" 4); TD=$(btdir "$B" "$ID")
+  # 폴더는 plan.tsv 의 브랜치로 미리 정해진다. orca 가 '/' 를 '-' 로 바꾸므로 '/' 가 있으면 발사 뒤 폴더가 어긋난다
+  case "$BR" in */*) echo "plan.tsv 브랜치에 '/' 가 있다: $BR — '-' 로 써라"; exit 1 ;; esac
+  P="$TD/prompt.md"
+  # 티켓 세션의 유일한 지시. 규칙 원본은 CLAUDE.local.md — 여기에는 이 티켓에 필요한 순서만 둔다
+  cat > "$P" <<EOF
+너는 묶음 $B 의 티켓 $ID($TITLE) 하나만 맡는 dev 세션이다. 티켓이 끝나면 허브가 이 세션을 닫는다.
+사람과는 허브(메인 dev 세션)가 이야기한다. 결정이 필요하면 허브에 알리고 턴을 끝낸다. 사람에게 직접 묻지 않는다.
+CLAUDE.local.md 의 티켓 워크플로 규칙을 따른다. 명령은 모두 dev 워크트리 루트에서 sh $SELF_DIR/ticket.sh 로 부른다.
+이 티켓의 폴더: $TD  (스펙·보고서·로그·요약이 모두 여기 있다)
+
+1. ticket.sh new $BR $TD/spec.html — 출력의 실제 브랜치가 $BR 와 다르면 진행하지 말고 5로(상태 failed, 이유: 브랜치 정규화)
+2. ticket.sh wait — 빈손이면 다시. 2회 연속 빈손이면 git log -1 $BR 로 진척을 보고, 안 늘었으면 4·5로(상태 stalled)
+3. 통지가 [done] 이면 바로 ticket.sh merge $BR. Failed·[done] 없음·질문(decision_gate·escalation)이면 머지하지 않고 4·5로(상태 question)
+4. $TD/summary.md 를 쓴다. 머지했으면 $TD/review-<sha>.html(통과) 또는 $TD/verify-<sha>.log(실패)를 읽고
+   writing-korean-explainers 스킬의 '규모가 작은 보고' 형식으로 5~10줄: 결론 첫 줄, 지적은 기능 영향 있음/없음으로 가름,
+   마지막 줄은 '재요청 / 마무리' 선택지와 권하는 쪽 한 줄(결정하지 않는다). 보고서를 붙여넣지 않는다
+5. ticket.sh notify $B/$ID <decision|failed|question|stalled> 를 보내고 턴을 끝낸다
+6. "허브 지시: <파일>" 이 오면 그 파일을 읽는다. 재요청·질문 답이면 본문(손대지 말 것 포함)을 $TD/resend-<n>.md 로 쓰고
+   ticket.sh send $BR <그 파일> → 2로. 마무리는 허브가 close 하므로 아무것도 하지 않는다
+
+하지 말 것: --no-verify, 리뷰 지적만으로 재요청, orca orchestration reply·check 직접 호출, 다른 티켓·dev 코드 직접 수정, close
+EOF
+  # 세션은 dev 워크트리에서 뜬다(ticket.sh 는 dev 에서만 돈다). 프롬프트는 파일로 넘긴다 — 여러 줄을 TUI 에 타이핑하면 빈 줄에서 잘린다
+  C=$(orca_ok terminal create --worktree "path:$DEV" --title "$ID $BR" --command "claude \"\$(cat '$P')\"")
+  S=$(printf '%s' "$C" | jq -r '.result.terminal.handle // empty')
+  [ -n "$S" ] || { echo "티켓 세션 핸들 없음: $C"; exit 1; }
+  printf '%s\n' "$S" > "$TD/session"
+  echo "티켓 세션: $B/$ID  terminal=$S  폴더=$TD  (동시 실행 $(running_count)/$WIP)"
+  ;;
+
+hub-wait)
+  ME=$(cat "$TICKETS/hub.terminal" 2>/dev/null || true)
+  [ -n "$ME" ] && [ "$ME" = "$(self_handle)" ] || { echo "허브 터미널에서만 — 'ticket.sh hub' 로 등록한 터미널이 아니다"; exit 1; }
+  OUT=$(orca_ok orchestration check --wait --terminal "$ME" --types status --timeout-ms "${2:-540000}")
+  N=$(printf '%s' "$OUT" | jq -r '.result.count // 0')
+  if [ "${N:-0}" -gt 0 ] 2>/dev/null; then
+    printf '%s' "$OUT" | jq -r '.result.messages[] | "알림: \(.subject)  \(.body // "")"'
+  else
+    echo "알림 없음(타임아웃) — 실패가 아니다. 다시 hub-wait"
+  fi
+  ;;
+
+tell)
+  [ -n "${2:-}" ] || usage
+  ref "$2"; TD=$(btdir "$B" "$ID")
+  shift 2; [ -n "${1:-}" ] || usage
+  S=$(cat "$TD/session" 2>/dev/null || true)
+  [ -n "$S" ] || { echo "티켓 세션 없음: $B/$ID"; exit 1; }
+  if [ -f "$1" ] && [ -r "$1" ]; then cp "$1" "$TD/inbox.md"; else printf '%s\n' "$*" > "$TD/inbox.md"; fi
+  # 바쁜 세션에 타이핑하면 진행 중인 턴에 섞인다 — 쉴 때까지 기다린다. 본문은 파일, 타이핑은 한 줄
+  # orca_ok 를 쓰지 않는다 — 시간 초과 안내가 new 용(워크트리 고아)이라 여기서는 오도한다
+  orca terminal wait --terminal "$S" --for tui-idle --timeout-ms 60000 --json 2>/dev/null | jq -e '.ok == true' >/dev/null || {
+    echo "티켓 세션이 60초 안에 쉬지 않았다 — 아직 일하는 중이다. 지시는 $TD/inbox.md 에 남겼다. 알림을 받은 뒤 다시 tell"; exit 1; }
+  orca_ok terminal send --terminal "$S" --text "허브 지시: $TD/inbox.md" --enter >/dev/null
+  echo "전달: $B/$ID ← $TD/inbox.md"
+  ;;
+
+notify)
+  [ -n "${2:-}" ] && [ -n "${3:-}" ] || usage
+  ref "$2"; STAT=$3
+  HUB=$(cat "$TICKETS/hub.terminal" 2>/dev/null || true)
+  [ -n "$HUB" ] || { echo "허브 미등록"; exit 1; }
+  BODY=${4:-$(btdir "$B" "$ID")/summary.md}
+  orca_ok orchestration send --to "$HUB" --from "$(self_handle)" --type status --subject "$B/$ID $STAT" --body "$BODY" >/dev/null
+  echo "허브에 알림: $B/$ID $STAT"
+  ;;
+
+selftest)
+  T=$(mktemp -d); TICKETS=$T; BUNDLES=$T/bundles; WIP=2
+  mkdir -p "$BUNDLES/b1" "$BUNDLES/b2"
+  printf 'A\tfeat-a\t-\ta\nB\tfeat-b\tA\tb\nC\tfeat-c\tA,B\tc\nD\tfeat-d\t-\td\nE\tfeat-e\t-\te\n# 주석\n' > "$BUNDLES/b1/plan.tsv"
+  printf 'X\tfeat-x\t-\tx\n' > "$BUNDLES/b2/plan.tsv"
+  for i in a b c e; do mkdir -p "$BUNDLES/b1/feat-$i"; echo '<p>ok</p>' > "$BUNDLES/b1/feat-$i/spec.html"; done
+  mkdir -p "$BUNDLES/b1/feat-d"; echo '<mark class="tbd">미정</mark>' > "$BUNDLES/b1/feat-d/spec.html"
+  fail=0
+  chk() { [ "$2" = "$3" ] && echo "  ok  $1" || { echo "  FAIL $1: 기대 '$3' 실제 '$2'"; fail=1; }; }
+  chk "의존 없는 티켓은 ready" "$(status_of b1 A)" ready
+  chk "의존이 안 끝나면 blocked" "$(status_of b1 B)" blocked
+  chk "미정 표시가 있으면 spec-tbd" "$(status_of b1 D)" spec-tbd
+  rm "$BUNDLES/b1/feat-e/spec.html"; chk "스펙이 없으면 spec-missing" "$(status_of b1 E)" spec-missing
+  chk "ready 목록" "$(ready_ids b1 | tr '\n' ' ')" "A "
+  chk "묶음이 둘이면 '<묶음>/<id>' 를 요구" "$( (ref A) 2>&1 | grep -c '묶음이 2개')" 1
+  ref b2/X; chk "'<묶음>/<id>' 풀기" "$B $ID" "b2 X"
+  echo h > "$BUNDLES/b1/feat-a/session"; chk "세션을 띄우면 running" "$(status_of b1 A)" running
+  mkdir -p "$BUNDLES/b2/feat-x"; echo h > "$BUNDLES/b2/feat-x/session"
+  chk "동시 실행 수는 묶음 전체" "$(running_count)" 2
+  chk "브랜치로 묶음 폴더 찾기(훅과 같은 함수)" "$(tdir_of feat-a)" "$BUNDLES/b1/feat-a"
+  chk "묶음에 없으면 single" "$(tdir_of fix/solo)" "$T/single/fix-solo"
+  touch "$BUNDLES/b1/feat-a/closed"; chk "close 하면 closed" "$(status_of b1 A)" closed
+  chk "closed 는 동시 실행에서 빠진다" "$(running_count)" 1
+  chk "의존이 풀리면 ready" "$(status_of b1 B)" ready
+  chk "의존 둘 중 하나만 끝나면 blocked" "$(status_of b1 C)" blocked
+  rm -rf "$T"
+  [ "$fail" = 0 ] && echo "selftest OK" || { echo "selftest 실패"; exit 1; }
   ;;
 
 *) usage ;;

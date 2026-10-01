@@ -10,7 +10,7 @@ workflow-scaffold/
     dev-sync.sh                         훅 본체 — 모드 4개 + --selftest
     pre-merge-commit  pre-commit        게이트. 본체를 호출하는 2~3줄
     post-merge  post-commit             보고서. 본체를 호출하는 2~3줄
-    ticket.sh                           티켓 라이프사이클 (new/wait/merge/send/close)
+    ticket.sh                           티켓 라이프사이클 (new/wait/merge/send/close) + 허브(hub/board/ready/spawn/hub-wait/tell/notify)
     verify.sh                           게이트가 실행하는 검사 ← 프로젝트마다 교체한다
     reviewer-prompt.md                  머지별 리뷰 프롬프트 ← '대상'·'체크 대상'을 프로젝트마다 교체한다
     closing-prompt.md                   close 종합 프롬프트
@@ -20,6 +20,7 @@ workflow-scaffold/
   skills/                               → dev 워크트리 .claude/skills/ 로 설치한다
     writing-ticket-specs/               스펙 5슬롯 검토
     writing-korean-explainers/          사람에게 하는 보고·설명 작성
+    ticket-hub/                         티켓이 여럿일 때 메인 dev 세션(허브) 운영
     writing-session-worklogs/           세션 작업 기록 → docs/worklog/. 전역 스킬이라 설치 대상이 아니다
                                         (~/.claude/skills/ 에 심링크로 건다 — 아래 '전역 스킬' 절)
     building-project-llm-wiki/          프로젝트 문서를 LLM 위키(raw·위키·해시 대장·ingest 훅)로 세운다. 전역 스킬
@@ -242,19 +243,47 @@ cd <dev워크트리>
 #   close 뒤 /writing-session-worklogs 로 과정을 docs/worklog/ 에 한 장 남긴다 — 보고서는 결과, 이쪽은 과정이다
 ```
 
-산출물은 티켓 폴더 하나에 모인다.
+### 묶음 작업: 허브
+
+큰 작업을 하위 티켓 표로 나눴다면(묶음 작업) dev 세션 하나를 **허브**로 두고 하위 티켓마다 티켓 dev 세션을 띄운다(`ticket-hub` 스킬). 단일 작업은 지금처럼 `new`를 직접 쓴다.
+사람은 허브하고만 이야기한다. 허브는 발사·현황·결정 전달만 하고 판단하지 않는다.
+
+```sh
+# .tickets/bundles/<묶음>/plan.tsv — id<TAB>브랜치(/ 없이)<TAB>의존(쉼표, 없으면 -)<TAB>제목.  스펙은 .tickets/bundles/<묶음>/<브랜치>/spec.html
+.githooks/ticket.sh hub            # 이 터미널을 허브로 등록
+.githooks/ticket.sh board [묶음]   # 상태: closed / running / spec-missing / spec-tbd / blocked / ready
+.githooks/ticket.sh ready [묶음]   # 발사 가능 = 의존 모두 close + 스펙에 미정 표시 없음 + 동시 실행 < TICKET_WIP(기본 3)
+.githooks/ticket.sh spawn cfd/T1   # 티켓 dev 세션 (묶음이 하나면 T1 만)을 새 터미널로 띄움 → 그 세션이 new→wait→merge→요약→notify
+.githooks/ticket.sh hub-wait       # 티켓 세션 알림 대기. 요약은 그 티켓 폴더의 summary.md
+.githooks/ticket.sh tell cfd/T1 결정.md   # 사람 결정(재요청·답)을 티켓 세션에 전달
+.githooks/ticket.sh close <브랜치>   # 마무리(사람만). closed 표시 + 티켓 세션 종료 + 새로 풀린 티켓 출력
+.githooks/ticket.sh selftest       # 발사 조건 계산 자체 점검
+```
+
+close 는 사람만 하므로 "의존 close" 조건은 두 번째 게이트가 아니다. 게이트는 여전히 `verify.sh` 하나다.
+
+산출물은 티켓 폴더 하나에 모인다. 티켓 폴더는 단일 작업과 묶음 작업이 처음부터 갈린다.
+어느 쪽인지는 `dev-sync.sh` 의 `ticket_rel` 한 곳이 정한다 — 묶음 `plan.tsv` 의 브랜치 열에 있으면 묶음, 아니면 단일.
 
 ```
 .tickets/
 ├─ queue.md                통과해서 머지된 것만 한 줄씩
 │                          형식: - [브랜치](링크) 시각 — <spec.html 의 h1>
-└─ <티켓>/
+├─ hub.terminal            허브 핸들 (묶음 작업일 때)
+├─ _dev/                   브랜치를 못 알아낸 머지
+├─ single/<티켓>/          단일 작업 (아래 티켓 폴더)
+└─ bundles/<묶음>/
+   ├─ plan.tsv             하위 티켓 목록
+   └─ <티켓>/              하위 티켓 (아래 티켓 폴더 + session · summary.md · inbox.md · prompt.md)
+
+<티켓>/
    ├─ spec.html            사람이 쓴 지시서. 워커의 유일한 입력이다
    ├─ diagram.html         (선택) 흐름이 복잡할 때만. /archify 로 그려 spec 에서 링크한다
    ├─ verify-<sha>.log     검사 결과. 시도마다 따로 쌓여서 덮이지 않는다
    ├─ review-<sha>.html    머지 한 번당 보고서 한 장. 브라우저에서 연다
    ├─ review.html          close 때 라운드 보고서들을 합친 최종본. 확인 항목은 체크박스다
-   └─ rounds/              합쳐진 뒤 옮겨진 라운드 원본
+   ├─ rounds/              합쳐진 뒤 옮겨진 라운드 원본
+   └─ closed               close 표시. 묶음에서는 다음 티켓의 발사 조건이다
 ```
 
 보고서는 스펙과 같은 HTML 한 장이다. 훅이 머리(제목·스타일)와 `기계 검증` 블록까지 쓴 파일에
@@ -308,7 +337,7 @@ cd <dev워크트리>
 
 | 증상 | 명령 |
 |---|---|
-| 게이트 실패로 머지가 취소됐다 | `cat .tickets/<slug>/verify-<sha>.log` → `ticket.sh send <브랜치> <재요청파일>` |
+| 게이트 실패로 머지가 취소됐다 | `cat .tickets/<single|bundles/묶음>/<slug>/verify-<sha>.log` → `ticket.sh send <브랜치> <재요청파일>` |
 | `merge` 가 머지를 시작하지 못했다고 한다 | 게이트 실패가 아니다(검사 로그가 없다). `git -C <dev> merge --abort`, `git branch --list` |
 | `send` 가 에이전트 터미널이 없다고 한다 | 워크트리가 이미 `close` 됐거나 브랜치명이 다르다. `orca terminal list --json \| jq -r '.result.terminals[].branch'` |
 | 충돌 상태에서 그만두고 싶다 | `git merge --abort` |

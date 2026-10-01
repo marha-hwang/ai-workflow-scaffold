@@ -38,9 +38,13 @@ CLAUDE_BIN=@@CLAUDE_BIN@@ # 절대경로 필수 (훅은 로그인 셸 아님). i
 #   <TICKET_DIR>/queue.md                 = 유일한 인덱스. verify 통과 + 머지 완료분만
 #       한 줄 형식: - [브랜치](링크) 시각 — <spec.html 의 h1>
 #       제목이 없으면 첫 커밋 제목으로 대신한다 (브랜치명만으로는 무슨 작업인지 안 보인다)
-#   <TICKET_DIR>/<slug>/verify-<sha>.log  = 기계 검증 (통과/실패 둘 다, sha별 누적)
-#   <TICKET_DIR>/<slug>/review-<sha>.html = 라운드 리뷰 (머지 성공 시만). close 때 rounds/ 로 이동
-#   <TICKET_DIR>/<slug>/review.html       = 티켓 종합 (close 때 1회. 라운드 리뷰들을 접은 최종본)
+#   티켓 폴더 <T> 는 작업 종류로 갈린다 (ticket_rel 한 곳에서만 정한다):
+#     single/<slug>            단일 작업
+#     bundles/<묶음>/<slug>     묶음 작업의 하위 티켓 — 그 묶음 plan.tsv 의 브랜치 열에 있으면 여기
+#     _dev                     브랜치를 못 알아낸 머지
+#   <TICKET_DIR>/<T>/verify-<sha>.log  = 기계 검증 (통과/실패 둘 다, sha별 누적)
+#   <TICKET_DIR>/<T>/review-<sha>.html = 라운드 리뷰 (머지 성공 시만). close 때 rounds/ 로 이동
+#   <TICKET_DIR>/<T>/review.html       = 티켓 종합 (close 때 1회. 라운드 리뷰들을 접은 최종본)
 #       보고서도 스펙과 같은 HTML 한 장이다 — 사람이 브라우저에서 열어 체크하며 읽는다
 #   <TICKET_DIR>/.verify-line             = gate -> report 로 넘기는 기계층 한 줄
 TICKET_DIR=.tickets
@@ -61,6 +65,20 @@ slug_of() {
   s=$(printf '%s' "$1" | tr '/' '-')
   [ "$s" = "$DEV_BRANCH" ] && s=_dev
   printf '%s' "$s"
+}
+
+# 브랜치 -> <TICKET_DIR> 기준 티켓 폴더. 묶음 소속은 plan.tsv(브랜치 열)가 정본이다 — 폴더 존재로 추측하지 않는다.
+# ticket.sh 도 'dev-sync.sh ticket-dir' 로 이 함수를 쓴다. 두 곳에서 따로 정하면 보고서가 다른 폴더에 떨어진다.
+ticket_rel() { # $1 티켓 루트  $2 브랜치
+  _s=$(slug_of "$2")
+  [ "$_s" = _dev ] && { printf '_dev'; return; }
+  for _p in "$1"/bundles/*/plan.tsv; do
+    [ -f "$_p" ] || continue
+    if awk -F'\t' -v b="$_s" '$1 !~ /^#/ && $2 == b { f = 1 } END { exit !f }' "$_p"; then
+      printf 'bundles/%s/%s' "$(basename "$(dirname "$_p")")" "$_s"; return
+    fi
+  done
+  printf 'single/%s' "$_s"
 }
 
 # 커밋 $2 를 가리키는 로컬 브랜치 이름 (없으면 빈 값).
@@ -157,11 +175,11 @@ review_range() { # $1 dev워크트리  $2 before  $3 after  $4 라벨(브랜치)
     return 0
   fi
   # 산출물은 티켓 폴더 안, 인덱스(queue.md)는 루트 하나. 큐가 dev 전체를 대표해야 한다.
-  slug=$(slug_of "$src")
-  mkdir -p "$rdir/$slug"
-  fname="$slug/review-$(git -C "$devwt" rev-parse --short "$after").html"
+  rel=$(ticket_rel "$rdir" "$src")
+  mkdir -p "$rdir/$rel"
+  fname="$rel/review-$(git -C "$devwt" rev-parse --short "$after").html"
   # 큐 식별용 한 줄. spec.html 이 없는 경로(_dev 등)는 첫 커밋 제목으로 대신한다.
-  desc=$(spec_title "$rdir/$slug")
+  desc=$(spec_title "$rdir/$rel")
   [ -n "$desc" ] || desc=$(git -C "$devwt" log "$before".."$after" --no-merges --pretty=%s | head -1)
 
   # 기계층 블록은 훅이 쓴다. LLM 이 못 건드려야 사실로 읽힌다.
@@ -197,9 +215,9 @@ review_range() { # $1 dev워크트리  $2 before  $3 after  $4 라벨(브랜치)
 # 라운드 원본은 rounds/ 로 옮겨 남긴다(기록은 지우지 않는다). 큐 줄도 티켓 1줄로 접는다.
 do_consolidate() { # $1 브랜치
   here=$(git rev-parse --show-toplevel)
-  br="$1"; slug=$(slug_of "$br")
-  rdir="$here/$TICKET_DIR"; tdir="$rdir/$slug"
-  [ -d "$tdir" ] || { echo "  종합 생략: 티켓 폴더 없음 ($TICKET_DIR/$slug)"; return 0; }
+  br="$1"
+  rdir="$here/$TICKET_DIR"; rel=$(ticket_rel "$rdir" "$br"); tdir="$rdir/$rel"
+  [ -d "$tdir" ] || { echo "  종합 생략: 티켓 폴더 없음 ($TICKET_DIR/$rel)"; return 0; }
   # 생성 순 = 라운드 순 (sha 는 순서를 안 알려준다).
   # fresh = 아직 안 접은 라운드(폴더 직속) / prev = 지난 close 가 접어둔 이력(rounds/).
   # 재개된 티켓을 두 번째로 close 할 때 prev 를 입력에 넣지 않으면 종합이 앞 라운드를 잃는다.
@@ -255,7 +273,7 @@ do_consolidate() { # $1 브랜치
   fi
   if [ "$ok" = 0 ]; then
     # 종합이 안 되면 이어붙이기라도 한다 — 라운드 파일이 rounds/ 로 옮겨지므로 본문이 여기 남아야 한다.
-    notify "$here" "종합 리뷰 생성 실패: $br — 라운드 리뷰를 이어붙였다 ($TICKET_DIR/$slug/review.html)"
+    notify "$here" "종합 리뷰 생성 실패: $br — 라운드 리뷰를 이어붙였다 ($TICKET_DIR/$rel/review.html)"
     printf '<section>\n<h2>종합 실패 — 라운드 리뷰 원문</h2>\n' >> "$out"
     printf '%s\n' "$rounds" | while IFS= read -r f; do
       # 각 라운드도 완결된 HTML 이라 머리를 지우고 붙인다 (doctype 이 중첩되면 안 된다)
@@ -270,16 +288,16 @@ do_consolidate() { # $1 브랜치
 
   # 큐: 같은 티켓의 라운드 줄들(링크가 rounds/ 로 이동해 깨졌다)을 종합 1줄로 교체.
   if [ -f "$rdir/queue.md" ]; then
-    grep -v -- "]($slug/review-" "$rdir/queue.md" > "$rdir/queue.md.tmp" || true
+    grep -v -- "]($rel/review-" "$rdir/queue.md" > "$rdir/queue.md.tmp" || true
     mv "$rdir/queue.md.tmp" "$rdir/queue.md"
     printf -- '- [%s](%s/review.html) 종합 %s라운드 %s — %s\n' \
-      "$br" "$slug" "$n" "$(date '+%m-%d %H:%M')" "$(spec_title "$tdir")" \
+      "$br" "$rel" "$n" "$(date '+%m-%d %H:%M')" "$(spec_title "$tdir")" \
       >> "$rdir/queue.md"
   fi
 
   rm -rf "$lock"
   # ${n} 로 감싼다 — sh 가 `$n건` 을 변수명 'n건' 으로 읽어 set -u 에 걸린다
-  echo "  종합: $TICKET_DIR/$slug/review.html (라운드 ${n}건 → rounds/ 로 이동, 큐 1줄로 접힘)"
+  echo "  종합: $TICKET_DIR/$rel/review.html (라운드 ${n}건 → rounds/ 로 이동, 큐 1줄로 접힘)"
 }
 
 # ---------------------------- 모드 구현 ------------------------------------
@@ -303,7 +321,7 @@ do_gate() {
   fi
   [ -n "$br" ] || br=$DEV_BRANCH                      # 알 수 없으면 _dev 폴더에 기록
   [ -n "$sha" ] || sha=$(git -C "$here" rev-parse HEAD)
-  if run_verify "$here" "$br" "$here/$TICKET_DIR/$(slug_of "$br")" "$sha"; then
+  if run_verify "$here" "$br" "$here/$TICKET_DIR/$(ticket_rel "$here/$TICKET_DIR" "$br")" "$sha"; then
     # 다음 훅(report)이 보고서 기계층에 그대로 쓴다
     printf '%s\n' "$VERIFY_LINE" > "$here/$TICKET_DIR/.verify-line"
     return 0
@@ -361,6 +379,14 @@ if [ "${1:-}" = "--selftest" ]; then
   [ -z "$(spec_title "$st/없는폴더")" ] \
     || { echo "실패: spec.html 없으면 빈 값이어야 함 (호출부가 커밋 제목으로 폴백한다)"; fail=1; }
   rm -rf "$st"
+  # ticket_rel: 묶음 plan.tsv 에 있으면 bundles/<묶음>/, 없으면 single/, dev 는 _dev. 어긋나면 보고서가 엉뚱한 폴더에 떨어진다
+  tr_=$(mktemp -d); mkdir -p "$tr_/bundles/b1"
+  printf '# 주석\tfeat-x\nT1\tfeat-in-b1\t-\t제목\n' > "$tr_/bundles/b1/plan.tsv"
+  [ "$(ticket_rel "$tr_" feat-in-b1)" = "bundles/b1/feat-in-b1" ] || { echo "실패: 묶음 티켓 폴더"; fail=1; }
+  [ "$(ticket_rel "$tr_" fix/solo)" = "single/fix-solo" ] || { echo "실패: 단일 티켓 폴더"; fail=1; }
+  [ "$(ticket_rel "$tr_" feat-x)" = "single/feat-x" ] || { echo "실패: 주석 줄은 묶음 소속이 아니다"; fail=1; }
+  [ "$(ticket_rel "$tr_" "$DEV_BRANCH")" = "_dev" ] || { echo "실패: dev 는 _dev"; fail=1; }
+  rm -rf "$tr_"
   # 보고서 HTML: 훅이 쓴 머리+기계층에서 종합이 verify 한 줄을 다시 집어내고,
   # 머리 잘라내기가 doctype 을 지우는가. 이 둘이 깨지면 종합 보고서가 조용히 망가진다.
   rt=$(mktemp -d)
@@ -431,12 +457,18 @@ case "$mode" in
     do_report "$(git rev-parse HEAD^1)" "$(git rev-parse HEAD)" "$label"
     ;;
 
+  ticket-dir)                 # ticket.sh 가 부른다: 브랜치 → 티켓 폴더 절대경로. $3 = 티켓 루트(기본 dev/.tickets)
+    [ -n "${2:-}" ] || { echo "사용: dev-sync.sh ticket-dir <브랜치> [루트]" >&2; exit 1; }
+    root=${3:-$here/$TICKET_DIR}
+    printf '%s/%s\n' "$root" "$(ticket_rel "$root" "$2")"
+    ;;
+
   consolidate)                # ticket.sh close 가 부른다 (훅 아님). 라운드 리뷰 → review.html 하나
     [ "$branch" = "$DEV_BRANCH" ] || { echo "consolidate 는 $DEV_BRANCH 워크트리에서만" >&2; exit 1; }
     [ -n "${2:-}" ] || { echo "사용: dev-sync.sh consolidate <브랜치>" >&2; exit 1; }
     do_consolidate "$2"
     ;;
 
-  *) echo "사용: dev-sync.sh gate|gate-commit|report|report-commit|consolidate <브랜치>|--selftest" >&2; exit 1 ;;
+  *) echo "사용: dev-sync.sh gate|gate-commit|report|report-commit|consolidate <브랜치>|ticket-dir <브랜치> [루트]|--selftest" >&2; exit 1 ;;
 esac
 exit 0
