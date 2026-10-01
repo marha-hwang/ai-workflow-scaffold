@@ -247,14 +247,21 @@ cd <dev워크트리>
 ### 묶음 작업: 허브
 
 큰 작업을 하위 티켓 표로 나눴다면(묶음 작업) dev 세션 하나를 **허브**로 두고 하위 티켓마다 티켓 dev 세션을 띄운다(`ticket-hub` 스킬). 단일 작업은 지금처럼 `new`를 직접 쓴다.
-사람은 허브하고만 이야기한다. 허브는 발사·현황·결정 전달만 하고 판단하지 않는다.
+사람은 허브하고만 이야기한다. 허브는 발사·머지·현황·결정 전달만 하고 판단하지 않는다.
+
+묶음 작업에서 바뀌는 규칙이 셋 있다(2026-10-01 첫 묶음 23개를 돌리며 정했다).
+
+- **머지는 허브 한 곳에서 순서대로 한다.** 티켓 세션은 `[done]`을 확인해 `notify … done`만 보낸다. dev 작업 트리는 하나라 세션 여럿이 merge 하면 경합으로 같은 충돌이 반복되고, 충돌을 푸는 도중 다른 세션이 `MERGE_HEAD`를 지우는 일까지 생겼다.
+- **워커는 공용 문서를 고치지 않는다.** 작업 로그·위키·해시 대장·추적표처럼 모든 티켓이 끝에 줄을 붙이는 파일은 연달아 머지될 때마다 충돌한다. 워커는 `[done]` 커밋 본문 `문서 반영:`에 적고, close 때 허브가 서브에이전트로 한 번에 반영한다.
+- **번호는 계획에서 나눠 준다.** migration 버전·ADR 번호는 티켓마다 대역을 스펙에 적는다. 파일 이름이 달라 git 이 못 잡으므로, `verify.sh`에 번호 겹침 검사를 넣어 안전망으로 둔다(템플릿 주석 참고).
 
 ```sh
 # .tickets/bundles/<묶음>/plan.tsv — id<TAB>브랜치(/ 없이)<TAB>의존(쉼표, 없으면 -)<TAB>제목.  스펙은 .tickets/bundles/<묶음>/<브랜치>/spec.html
 .githooks/ticket.sh hub            # 이 터미널을 허브로 등록
 .githooks/ticket.sh board [묶음]   # 상태: closed / running / spec-missing / spec-tbd / blocked / ready
 .githooks/ticket.sh ready [묶음]   # 발사 가능 = 의존 모두 close + 스펙에 미정 표시 없음 + 동시 실행 < TICKET_WIP(기본 3)
-.githooks/ticket.sh spawn cfd/T1   # 티켓 dev 세션 (묶음이 하나면 T1 만)을 새 터미널로 띄움 → 그 세션이 new→wait→merge→요약→notify
+.githooks/ticket.sh spawn cfd/T1   # 티켓 dev 세션 (묶음이 하나면 T1 만)을 새 터미널로 띄움 → 그 세션이 new→wait→[done]이면 notify done
+.githooks/ticket.sh merge <브랜치>   # done 알림을 받은 허브가 하나씩. 통과하면 tell 로 "머지됨 <sha>" → 티켓 세션이 요약해 decision
 .githooks/ticket.sh hub-wait       # 티켓 세션 알림 대기. 요약은 그 티켓 폴더의 summary.md
 .githooks/ticket.sh tell cfd/T1 결정.md   # 사람 결정(재요청·답)을 티켓 세션에 전달
 .githooks/ticket.sh close <브랜치>   # 마무리(사람만). closed 표시 + 티켓 세션 종료 + 새로 풀린 티켓 출력
@@ -346,6 +353,8 @@ close 는 사람만 하므로 "의존 close" 조건은 두 번째 게이트가 �
 | 설치 상태를 점검하고 싶다 | dev 워크트리 안에서 `sh .githooks/dev-sync.sh --selftest` |
 | 락이 남아서 막힌다 | `rm -rf .tickets/.lock` |
 | 워크트리가 dev보다 낡았다 | `git -C <워크트리> merge dev` (자동 전파는 없다) |
+| `wait`·`notify`·`hub`가 "핸들을 못 찾았다" | `ORCA_TERMINAL_HANDLE`·`ORCA_PANE_KEY`가 `orca terminal list` 와 안 맞는다. 묶음 티켓 세션은 브랜치 커밋으로 `[done]`을 확인하고 summary.md 만 남긴다. 핸들을 직접 지정하는 우회는 만들지 않는다(다른 세션을 사칭할 수 있다) |
+| 머지마다 같은 공용 문서가 충돌한다 | 워커가 공용 문서를 고쳤다. 공용 문서는 `[done]` 커밋 본문 `문서 반영:`에 적게 하고 close 때 허브가 반영한다 |
 | `close` 의 종합이 실패했다 | `sh .githooks/dev-sync.sh consolidate <브랜치>` |
 
 ## git 훅 함정 — 측정으로 확인한 것들

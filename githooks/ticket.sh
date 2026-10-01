@@ -17,10 +17,12 @@
 # 허브(메인 dev 세션) — 묶음 작업(bundles/<묶음>/plan.tsv)의 하위 티켓을 돌린다. 판정·계획은 여전히 하지 않는다:
 #   발사 조건은 "의존 티켓이 모두 close 됨 + 스펙에 미정 표시 없음 + 동시 실행 < TICKET_WIP(기본 3)" 뿐이고,
 #   close 는 사람만 한다(그래서 이 조건이 두 번째 게이트가 되지 않는다).
+#   **묶음 티켓의 merge 는 허브 한 곳에서 순서대로 한다.** 티켓 세션은 [done] 을 확인해 'done' 으로 알리기만 한다.
+#   dev 작업 트리는 하나뿐이라 세션 여럿이 merge 하면 경합(같은 충돌 반복)과 MERGE_HEAD 간섭이 생긴다(2026-10-01 실측).
 #   ticket.sh hub                              이 터미널을 허브로 등록
 #   ticket.sh board [묶음]                     하위 티켓 상태표 (묶음을 안 주면 전부)
 #   ticket.sh ready [묶음]                     지금 발사할 수 있는 id
-#   ticket.sh spawn <티켓>                     티켓 dev 세션을 새 터미널로 띄운다 (그 세션이 new→wait→merge→요약)
+#   ticket.sh spawn <티켓>                     티켓 dev 세션을 새 터미널로 띄운다 (그 세션이 new→wait→done 알림, 머지는 허브)
 #   ticket.sh hub-wait [timeout_ms]            티켓 세션의 알림 대기 (허브에서)
 #   ticket.sh tell <티켓> <파일|텍스트>          사람 결정을 티켓 세션에 전달 (허브에서)
 #   ticket.sh notify <티켓> <상태> [본문]        티켓 세션 → 허브 알림 (티켓 세션에서)
@@ -156,14 +158,17 @@ handle_of() {
 # `check` 를 --terminal 없이 부르면 어떤 메일박스도 열리지 않고 항상 count:0 이 온다.
 # 그때 통지는 하네스가 턴 경계에 주입하는 경로로만 보여서, **사람이 ESC 를 누를 때까지 dev 가 안 깨어난다**
 # (실제 사고: wait 가 9분씩 헛돌고, 그 사이 끝난 워커의 worker_done 이 쌓여 있었다).
-# ORCA_PANE_KEY="<tabId>:<leafId>" 가 terminal list 레코드와 1:1 로 맞는다. 같은 브랜치에
-# 터미널이 여러 개(dev 는 항상 그렇다)여도 이 키로는 하나로 정해진다.
+# 1순위는 Orca 가 터미널에 직접 넣어 주는 ORCA_TERMINAL_HANDLE 이다(Orca 1.4.x). 그 값이 terminal list 에
+# 실제로 있을 때만 쓴다 — 우리가 만든 변수가 아니라 Orca 가 띄울 때 정한 값이라 세션이 자기를 사칭할 수 없다.
+# 2순위 ORCA_PANE_KEY="<tabId>:<leafId>" 는 Orca 가 터미널을 `pty:…` 형식 tabId 로 다시 등록하는 순간
+# 레코드와 안 맞게 된다(2026-10-01 묶음 작업에서 티켓 세션 5개가 이것으로 wait·notify 를 잃었다).
 self_handle() {
   _tl=$(orca_ok terminal list)
-  printf '%s' "$_tl" | jq -r --arg k "${ORCA_PANE_KEY:-}" --arg t "${ORCA_TAB_ID:-}" '
-    [ .result.terminals[]
-      | select( ($k != "" and "\(.tabId):\(.leafId)" == $k)
-                or ($k == "" and $t != "" and .tabId == $t) ) ]
+  printf '%s' "$_tl" | jq -r --arg h "${ORCA_TERMINAL_HANDLE:-}" --arg k "${ORCA_PANE_KEY:-}" --arg t "${ORCA_TAB_ID:-}" '
+    .result.terminals as $all
+    | ( [ $all[] | select($h != "" and .handle == $h) ]
+      + [ $all[] | select( ($k != "" and "\(.tabId):\(.leafId)" == $k)
+                           or ($k == "" and $t != "" and .tabId == $t) ) ] )
     | .[0].handle // empty'
 }
 
@@ -401,15 +406,20 @@ CLAUDE.local.md 의 티켓 워크플로 규칙을 따른다. 명령은 모두 de
 
 1. ticket.sh new $BR $TD/spec.html — 출력의 실제 브랜치가 $BR 와 다르면 진행하지 말고 5로(상태 failed, 이유: 브랜치 정규화)
 2. ticket.sh wait — 빈손이면 다시. 2회 연속 빈손이면 git log -1 $BR 로 진척을 보고, 안 늘었으면 4·5로(상태 stalled)
-3. 통지가 [done] 이면 바로 ticket.sh merge $BR. Failed·[done] 없음·질문(decision_gate·escalation)이면 머지하지 않고 4·5로(상태 question)
-4. $TD/summary.md 를 쓴다. 머지했으면 $TD/review-<sha>.html(통과) 또는 $TD/verify-<sha>.log(실패)를 읽고
+   wait 가 "핸들을 못 찾았다"로 죽으면 기다리지 말고 git log -1 $BR 로 [done] 커밋을 확인하는 방식으로 바꾼다
+3. 통지가 [done] 이면 **머지하지 않는다** — 머지는 허브가 순서대로 한다. $TD/summary.md 에 브랜치·커밋 sha·[done] 한 줄만 쓰고
+   5로(상태 done). Failed·[done] 없음·질문(decision_gate·escalation)이면 4·5로(상태 question)
+4. $TD/summary.md 를 쓴다. 허브가 머지했다고 알려 오면 $TD/review-<sha>.html(통과) 또는 $TD/verify-<sha>.log(실패)를 읽고
    writing-korean-explainers 스킬의 '규모가 작은 보고' 형식으로 5~10줄: 결론 첫 줄, 지적은 기능 영향 있음/없음으로 가름,
    마지막 줄은 '재요청 / 마무리' 선택지와 권하는 쪽 한 줄(결정하지 않는다). 보고서를 붙여넣지 않는다
-5. ticket.sh notify $B/$ID <decision|failed|question|stalled> 를 보내고 턴을 끝낸다
-6. "허브 지시: <파일>" 이 오면 그 파일을 읽는다. 재요청·질문 답이면 본문(손대지 말 것 포함)을 $TD/resend-<n>.md 로 쓰고
+5. ticket.sh notify $B/$ID <done|decision|failed|question|stalled> 를 보내고 턴을 끝낸다
+   notify 가 핸들 문제로 실패해도 summary.md 는 남긴다 — 허브가 파일을 읽는다
+6. "허브 지시: <파일>" 이 오면 그 파일을 읽는다.
+   머지 알림(머지 커밋 sha)이면 4로(그 뒤 상태 decision). 재요청·질문 답이면 본문(손대지 말 것 포함)을 $TD/resend-<n>.md 로 쓰고
    ticket.sh send $BR <그 파일> → 2로. 마무리는 허브가 close 하므로 아무것도 하지 않는다
 
-하지 말 것: --no-verify, 리뷰 지적만으로 재요청, orca orchestration reply·check 직접 호출, 다른 티켓·dev 코드 직접 수정, close
+하지 말 것: --no-verify, 리뷰 지적만으로 재요청, orca orchestration reply·check 직접 호출, 다른 티켓·dev 코드 직접 수정, close,
+  ticket.sh merge, dev 작업 트리의 git 상태 변경(merge --abort·--quit·commit·reset 포함 — 허브가 머지 중일 수 있다)
 EOF
   # 세션은 dev 워크트리에서 뜬다(ticket.sh 는 dev 에서만 돈다). 프롬프트는 파일로 넘긴다 — 여러 줄을 TUI 에 타이핑하면 빈 줄에서 잘린다
   C=$(orca_ok terminal create --worktree "path:$DEV" --title "$ID $BR" --command "claude \"\$(cat '$P')\"")

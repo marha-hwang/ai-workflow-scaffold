@@ -82,7 +82,15 @@ def mark(paths, root=ROOT):
     for rel in [r for r in ledger if r not in current]:
         if any((root / rel).resolve() == t or t in (root / rel).resolve().parents for t in targets):
             del ledger[rel]
+    # 아무 원천에도 안 걸린 인자는 실패로 돌려준다. 셸이 여러 경로를 한 인자로 넘기면(zsh는 $P를 단어로 안 쪼갠다)
+    # 아무것도 기록하지 않고 "완료"만 찍혀 대기가 조용히 남았다(2026-10-01)
+    hit = [r for r in list(current) + list(ledger)]
+    missed = [str(p) for p, t in zip(paths, targets)
+              if not any((root / r).resolve() == t or t in (root / r).resolve().parents for r in hit)]
+    if missed:
+        return missed
     (root / LEDGER).write_text(json.dumps(dict(sorted(ledger.items())), ensure_ascii=False, indent=0) + "\n", encoding="utf-8")
+    return []
 
 
 def pages_citing(rel, root=ROOT):
@@ -162,7 +170,10 @@ def selfcheck():
         assert not any("secret.md" in x or "../a.md" in x for x in p), p
         new = [x for x in pending(r) if x[1] in ("docs/raw/a.md", "docs/raw/b.md")]
         assert new == [("새 파일", "docs/raw/a.md"), ("새 파일", "docs/raw/b.md")], pending(r)
-        mark(["docs/raw"], r)
+        # 경로 여럿이 한 인자로 붙어 오면(zsh) 아무것도 기록하지 않고 실패를 돌려준다
+        assert mark(["docs/raw/a.md\ndocs/raw/b.md"], r) == ["docs/raw/a.md\ndocs/raw/b.md"]
+        assert len(pending(r)) >= 2, pending(r)
+        assert mark(["docs/raw"], r) == []
         assert pending(r) == [], pending(r)
         (raw / "a.md").write_text("changed"); (raw / "b.md").unlink(); (raw / "c.md").write_text("x")
         assert pending(r) == [("수정", "docs/raw/a.md"), ("삭제", "docs/raw/b.md"), ("새 파일", "docs/raw/c.md")], pending(r)
@@ -187,7 +198,10 @@ if __name__ == "__main__":
             print("\n".join(lines[:30]) + (f"\n- ... 외 {len(lines) - 30}건 (python3 docs/lint.py로 전체 확인)" if len(lines) > 30 else ""))
         sys.exit(0)
     if args[:1] == ["--mark"]:
-        mark(args[1:] or list(WATCH))
+        missed = mark(args[1:] or list(WATCH))
+        if missed:
+            print("대장에 기록하지 않았다 — 원천에 없는 경로(인자 하나에 경로 여럿이 붙었나?):\n  " + "\n  ".join(missed))
+            sys.exit(1)
         print(f"대장 기록 완료. ingest 대기 {len(pending())}건")
         sys.exit(0)
     selfcheck()

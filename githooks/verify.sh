@@ -39,5 +39,14 @@ exit 1
 #   go:      go vet ./... && go test ./...
 #   rust:    cargo clippy -- -D warnings && cargo test
 #
+# 묶음 작업(티켓 여러 개 병렬)이면 넣을 것 — git 충돌로 안 잡히는 "번호 겹침"이다.
+#   파일 이름이 달라 둘 다 머지되고, 앞의 검사는 DB·문서를 안 돌려 못 잡는다(2026-10-01 실측: migration 버전 겹침).
+#   번호를 쓰는 폴더마다 한 줄씩. 폴더가 없는 프로젝트는 넣지 않는다:
+#     dup() { d=$(ls "$1" 2>/dev/null | sed -nE "s/$2/\1/p" | sort | uniq -d); [ -z "$d" ] || { echo "$1 번호 겹침: $d" >&2; exit 1; }; }
+#     dup supabase/migrations '^([0-9]+)_.*'        # migration 버전
+#     dup docs/adr '^ADR-([0-9]+).*'                # ADR 번호
+#   LLM 위키(docs/lint.py)를 쓰면 링크 문제도 넣는다. 종료코드는 문제만 보고 ingest 대기는 보지 않는다:
+#     python3 docs/lint.py >/dev/null || { python3 docs/lint.py | tail -5 >&2; exit 1; }
+#
 # 문자열·설정만 바꾸는 티켓은 typecheck 에 안 걸린다. 그때 넣을 것:
 #   "바뀐 값이 실제로 그 값인가" + "옛 값이 어디에도 안 남았는가" 를 파일을 읽는 테스트로.
