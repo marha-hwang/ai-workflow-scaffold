@@ -78,3 +78,4 @@ sh ../.githooks/ticket.sh board    # 상태표
 | `wait`·`notify`가 "핸들을 못 찾았다" | `ORCA_TERMINAL_HANDLE`·`ORCA_PANE_KEY`가 terminal list 와 안 맞는다. 티켓 세션은 브랜치 커밋으로 `[done]`을 확인하고 summary.md 만 남긴다. 핸들을 직접 지정하는 우회는 만들지 않는다 |
 | 머지마다 같은 공용 문서가 충돌 | 워커가 공용 문서를 고쳤다. 재요청에 "공용 문서는 고치지 말고 `문서 반영:`에 적어라"를 넣는다 |
 | `tell`이 tui-idle 시간 초과 | 티켓 세션이 아직 일하는 중이다. 알림을 받은 뒤에 보낸다 |
+| 티켓 세션이 "`send` 거부: already has an active dispatch"로 답을 못 넘김 | 워커가 질문(decision_gate) 뒤 worker_done 없이 턴을 끝내 앞 dispatch 가 열려 있다. 2026-10-02부터 `send`가 워커가 쉬면 앞 task 를 completed 로 닫고 다시 보낸다. 워커가 일하는 중이면 tui-idle 시간 초과로 끝나니 다음 알림 뒤에 다시 `tell` |

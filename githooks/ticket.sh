@@ -325,7 +325,19 @@ send)
   T=$(printf '%s' "$TJ" | jq -r '.result.task.id // empty')
   [ -n "$T" ] || { echo "task id 없음: $TJ"; exit 1; }
   orca_ok terminal wait --terminal "$H" --for tui-idle --timeout-ms 60000 >/dev/null
-  orca_ok orchestration dispatch --task "$T" --to "$H" --inject >/dev/null
+  # 워커가 질문(decision_gate)을 보내고 worker_done 없이 턴을 끝내면 앞 task 의 dispatch 가 열린 채 남아
+  # 새 dispatch 가 "already has an active dispatch" 로 거부된다(2026-10-02, T10·T18·T22 답이 이렇게 유실됐다).
+  # 위 tui-idle 이 지났으면 워커 턴은 끝났다 → 앞 task 를 completed 로 닫고 한 번만 다시 보낸다.
+  # completed 만 dispatch 를 푼다(blocked·failed 는 안 푼다, 2026-10-02 실측).
+  DJ=$(orca orchestration dispatch --task "$T" --to "$H" --inject --json 2>&1) || true
+  if ! printf '%s' "$DJ" | jq -e '.ok == true' >/dev/null 2>&1; then
+    OLD=$(printf '%s' "$DJ" | sed -n 's/.*already has an active dispatch ([^)]* for task \(task_[A-Za-z0-9]*\)).*/\1/p')
+    [ -n "$OLD" ] || { echo "orchestration dispatch 실패: $(printf '%s' "$DJ" | tr -d '\n' | head -c 300)" >&2; exit 1; }
+    orca_ok orchestration task-update --id "$OLD" --status completed \
+      --result "{\"superseded_by\":\"$T\",\"reason\":\"worker turn ended without worker_done\"}" >/dev/null
+    echo "앞 dispatch 닫음: $OLD (워커 턴이 끝난 채 열려 있었다)"
+    orca_ok orchestration dispatch --task "$T" --to "$H" --inject >/dev/null
+  fi
   echo "재요청 전달: $BR  task=$T  terminal=$H  (다음: wait → merge)"
   ;;
 
